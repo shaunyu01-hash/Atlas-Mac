@@ -178,6 +178,7 @@ class MainWindow(QMainWindow):
         for b in (self.po_switch, self.inv_switch):
             b.setCheckable(True)
             b.setFixedHeight(22)
+            b.setStyleSheet("padding-top: 0px; padding-bottom: 0px;")  # the theme's padding clipped the letters that hang below the line
             switch.addWidget(b)
         self.po_switch.setChecked(True)
         if self.inventory_entries:
@@ -314,6 +315,7 @@ class MainWindow(QMainWindow):
             self._inv_names[self.inv_nav.count() - 1] = name
             self.inv_glyphs[self.inv_nav.count() - 1] = glyph
         self.inv_nav.currentRowChanged.connect(self._inv_navigate)
+        self.inv_nav.itemClicked.connect(self._inv_clicked)
         self._update_counts()
         self._name_theme_button()
 
@@ -537,16 +539,34 @@ class MainWindow(QMainWindow):
             return
         if not self._leave_document():
             return
+        self._purchasing_sidebar()
         self.of_page.new_of()
         self.stack.setCurrentWidget(self.of_page)
 
     def open_of(self, of_id: int):
+        self._purchasing_sidebar()
         self.of_page.open_of(of_id)
         self.stack.setCurrentWidget(self.of_page)
 
     def open_po(self, po_id: int):
+        self._purchasing_sidebar()
         self.po_page.open_po(po_id)
         self.stack.setCurrentWidget(self.po_page)
+
+    def _purchasing_sidebar(self):
+        """Order Forms and POs belong to Purchasing, so opening one from Inventory (Ctrl+Shift+N, say) brings the Purchasing sidebar back."""
+        if self.system != "po":
+            self.system = "po"
+            self.po_switch.setChecked(True)
+            self.inv_switch.setChecked(False)
+            self.nav.setVisible(True)
+            self.inv_nav.setVisible(False)
+
+    def _inv_clicked(self, item):
+        row = self.inv_nav.row(item)
+        name = self._inv_names.get(row)
+        if name is not None and row == self.inv_nav.currentRow() and self.stack.currentWidget() is not self._built(name):
+            self._inv_navigate(row)
 
     def _back_from_document(self):
         if self._leaving:
@@ -583,6 +603,11 @@ class MainWindow(QMainWindow):
             from .. import inventory as inventory_service
             n = inventory_service.adjustments_waiting(self.conn, self.user)
             self.inv_nav.item(adjust_row).setText(f"Adjustments  ({n})" if n else "Adjustments")
+        sales_row = next((r for r, n in self.__dict__.get("_inv_names", {}).items() if n == "inv_sales"), None)
+        if sales_row is not None and self.user.can("stock.post"):
+            from .. import stock_sales as sales_service
+            n = sales_service.waiting(self.conn, self.user)
+            self.inv_nav.item(sales_row).setText(f"Sales  ({n})" if n else "Sales")
         # Whoever signs off sees how many wait for them, without clicking through rows.
         # Damage the branches reported waits for Accounting or management.
         if self.claims_row is not None and self.user.can("cs.approve_request"):

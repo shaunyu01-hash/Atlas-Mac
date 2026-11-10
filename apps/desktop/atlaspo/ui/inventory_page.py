@@ -131,14 +131,20 @@ class ProductLines(QWidget):
 
 
 class _Dialog(QDialog):
+    """Enter alone never saves: it adds a product or moves to the next figure. Ctrl+Enter saves. Esc asks before throwing typing away."""
+
     def __init__(self, parent, title: str, ok: str):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(820, 560)
         self.root = QVBoxLayout(self)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(ok)
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setAutoDefault(False)
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText(ok)
+        ok_btn.setToolTip("Ctrl+Enter")
+        for b in self.buttons.buttons():
+            b.setAutoDefault(False)
+            b.setDefault(False)
         self.buttons.accepted.connect(self._ok)
         self.buttons.rejected.connect(self.reject)
 
@@ -148,6 +154,28 @@ class _Dialog(QDialog):
     def _ok(self):
         from .common import guarded
         guarded(self, self._save)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier and self.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled():
+                self._ok()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _typed_something(self) -> bool:
+        for table in self.findChildren(QTableWidget):
+            for r in range(table.rowCount()):
+                for c in range(table.columnCount()):
+                    item = table.item(r, c)
+                    if item is not None and item.flags() & Qt.ItemFlag.ItemIsEditable and item.text().strip():
+                        return True
+        return any(lines.table.rowCount() for lines in self.findChildren(ProductLines))
+
+    def reject(self):
+        if self.result() == QDialog.DialogCode.Accepted or not self._typed_something() or confirm(
+                self, self.windowTitle(), "Close without saving? What you typed here will be lost.", "Close without saving"):
+            super().reject()
 
 
 # ------------------------------------------------------------------ stock on hand
@@ -186,7 +214,7 @@ class StockPage(QWidget):
         split = QSplitter(Qt.Orientation.Vertical)
         self.table = make_table(["Place", "SKU", "Product", "Size", "Color", "Unit", "For sale", "Damaged", "Held for supplier", "On the way", "Value"],
                                 numeric=(6, 7, 8, 9, 10), stretch=2)
-        set_widths(self.table, {0: 130, 1: 110, 3: 70, 4: 80, 5: 50, 6: 80, 7: 80, 8: 110, 9: 90, 10: 110})
+        set_widths(self.table, {0: 130, 1: 110, 3: 70, 4: 80, 5: 50, 6: 80, 7: 80, 8: 130, 9: 90, 10: 110})
         self.table.itemSelectionChanged.connect(self._card)
         split.addWidget(self.table)
         card = QWidget()
@@ -195,7 +223,7 @@ class StockPage(QWidget):
         self.card_title = label("Pick a product to see its stock card", "PanelTitle")
         cl.addWidget(self.card_title)
         self.card = make_table(["Date", "What happened", "Paper", "Stock", "In / out", "For sale after", "Damaged after", "Held after"], numeric=(4, 5, 6, 7), stretch=1)
-        set_widths(self.card, {0: 140, 2: 130, 3: 80, 4: 80, 5: 100, 6: 100, 7: 90})
+        set_widths(self.card, {0: 140, 2: 130, 3: 80, 4: 80, 5: 110, 6: 115, 7: 90})
         cl.addWidget(self.card)
         split.addWidget(card)
         split.setSizes([500, 260])
@@ -204,7 +232,7 @@ class StockPage(QWidget):
 
     def refresh(self, *_):
         day = service.live_since(self.conn)
-        self.since.setText(f"Counting orders received from {fmt_date(day)}" if day else "Counting every order received")
+        self.since.setText(f"Counting purchasing movements from {fmt_date(day)}" if day else "Counting every order received")
         key = selected_key(self.table)
         self.rows = service.on_hand(self.conn, self.user, combo_value(self.place), self.search.text(), combo_value(self.dept), self.below.isChecked())
         fill_table(self.table, [[r["location_name"], r["item_code"], r["description"], r["size"], r["color"], r["unit"], fmt_qty(r["good_m"]), fmt_qty(r["damaged_m"]),
@@ -233,7 +261,7 @@ class StockPage(QWidget):
 
     def change_since(self):
         d = _Dialog(self, "Inventory start date", "Save")
-        d.root.addWidget(label("Orders first received before this day stay off the books. The first stock count at each place gives its opening stock.", "Muted"))
+        d.root.addWidget(label("Deliveries and other purchasing movements before this day stay off the books. The first stock count at each place gives its opening stock.", "Muted"))
         when = date_edit(service.live_since(self.conn) or None)
         d.root.addWidget(when)
         d._save = lambda: (service.set_live_since(self.conn, self.user, date_value(when)), d.accept())
@@ -253,9 +281,11 @@ class CountSheetDialog(_Dialog):
         self.conn, self.user, self.count_id = conn, user, count_id
         sheet = service.count_sheet(conn, user, count_id)
         self.root.addWidget(label(f"{sheet['count_number']}, {sheet['location_name']}, {sheet['department']}, round {sheet['round']}", "PanelTitle"))
-        hint = ("Count everything listed. Type 0 where there's none." if sheet["round"] == 1 else
-                "These products didn't match last round. Count them again.")
-        self.root.addWidget(label(hint + " Don't look at anyone else's figures.", "Muted"))
+        hint = ("Count everything listed. Type 0 where there's none. Leave out goods still being received, held for a supplier, or packed to go back."
+                if sheet["round"] == 1 else "These products didn't match last round. Count them again.")
+        note = label(hint + " Don't look at anyone else's figures. Ctrl+Enter saves.", "Muted")
+        note.setWordWrap(True)
+        self.root.addWidget(note)
         self.table = make_table(["SKU", "Product", "Size", "Color", "Unit", "Counted"], numeric=(5,), stretch=1)
         set_widths(self.table, {0: 110, 2: 70, 3: 80, 4: 60, 5: 90})
         fill_table(self.table, [[l["item_code"], l["description"], l["size"], l["color"], l["unit"], ""] for l in sheet["lines"]], keys=[l["product_id"] for l in sheet["lines"]])
@@ -289,12 +319,15 @@ class StartCountDialog(_Dialog):
         self.dept = department_combo(conn)
         self.note = QLineEdit()
         form.addRow("Where", self.place)
-        form.addRow("What", self.dept)
+        form.addRow("Department", self.dept)
         form.addRow("Note", self.note)
         self.root.addLayout(form)
-        self.root.addWidget(label("Two people at that place count it blind. Keep stock from moving there until the count is posted.", "Muted"))
+        hint = label("Two people at that place count it blind. Count before the place opens or after it closes: sales typed in after a product "
+                     "was counted are taken as made after the count. Transfers to that place are counted in once this count is posted.", "Muted")
+        hint.setWordWrap(True)
+        self.root.addWidget(hint)
         self.finish()
-        self.resize(480, 220)
+        self.resize(520, 260)
 
     def _save(self):
         self.count_id = service.open_count(self.conn, self.user, combo_value(self.place), combo_value(self.dept), self.note.text())
@@ -316,7 +349,7 @@ class CountsPage(QWidget):
         self.labels = {**service.COUNT_LABELS, "ALL": "All"}
         self.tabs = register_tabs(self.labels, self._set_tab)
         root.addWidget(self.tabs)
-        self.table = make_table(["Count", "Place", "What", "Status", "Round", "Products", "To agree", "Started by", "Started"], numeric=(4, 5, 6), stretch=2)
+        self.table = make_table(["Count", "Place", "Department", "Status", "Round", "Products", "To agree", "Started by", "Started"], numeric=(4, 5, 6), stretch=2)
         set_widths(self.table, {0: 120, 1: 140, 2: 150, 3: 120, 4: 60, 5: 70, 6: 70, 7: 130, 8: 140})
         self.table.itemSelectionChanged.connect(self._selected)
         root.addWidget(self.table, 2)
@@ -337,10 +370,13 @@ class CountsPage(QWidget):
         if self.counter:
             row.addWidget(self.count_btn)
         root.addLayout(row)
-        heads = (["SKU", "Product", "Size", "Color", "Unit", "Books at start", "Agreed", "Difference", "Value", "Counts"] if self.manager
+        heads = (["SKU", "Product", "Size", "Color", "Unit", "Books when counted", "Agreed", "Difference", "Value", "Counts"] if self.manager
                  else ["Round", "SKU", "Product", "Size", "Color", "My figure"])
         self.lines = make_table(heads, numeric=(5, 6, 7, 8) if self.manager else (0, 5), stretch=1 if self.manager else 2)
+        if self.manager:
+            set_widths(self.lines, {0: 110, 2: 70, 3: 80, 4: 50, 5: 130, 6: 80, 7: 90, 8: 100, 9: 260})
         root.addWidget(self.lines, 2)
+        self.table.doubleClicked.connect(self._open)
         self.refresh()
 
     def _set_tab(self, tab):
@@ -373,7 +409,8 @@ class CountsPage(QWidget):
         show_if(self.post_btn, status == service.AGREED and self.user.can("stock.post"))
         show_if(self.cancel_btn, status in (service.COUNTING, service.AGREED) and self.user.can("count.manage"))
         if r is None:
-            self.note.setText("No stock counts here." if not self.rows else "")
+            self.note.setText(("" if self.rows else "No stock counts here." if self.manager else
+                               "No stock count to do. When the office starts one here, it appears in this list for you to count."))
             fill_table(self.lines, [])
             return
         if self.manager:
@@ -386,7 +423,7 @@ class CountsPage(QWidget):
                     service.POSTED: f"Posted by {r['closed_name']}, {fmt_datetime(r['closed_at'])}.",
                     service.CANCELLED: f"Cancelled by {r['closed_name']}: {r['cancel_reason']}"}[r["status"]]
             if r["status"] in (service.COUNTING, service.AGREED) and res["moved_since"]:
-                text += f" Careful: stock moved there {res['moved_since']} times since the count started, so those movements may be counted twice."
+                text += f" Stock moved there {res['moved_since']} times since the count started; each difference allows for what was recorded before the product was counted."
             self.note.setText(text)
         else:
             mine = service.my_figures(self.conn, self.user, r["id"])
@@ -397,6 +434,10 @@ class CountsPage(QWidget):
     def _done(self):
         self.refresh()
         self.changed.emit()
+
+    def _open(self, *_):
+        if self.count_btn.isVisible():
+            self.count()
 
     def start(self):
         d = StartCountDialog(self, self.conn, self.user)
@@ -655,6 +696,7 @@ class TransfersPage(QWidget):
         root.addLayout(row)
         self.lines = make_table(["SKU", "Product", "Size", "Color", "Unit", "Sent", "Received"], numeric=(5, 6), stretch=1)
         root.addWidget(self.lines, 2)
+        self.table.doubleClicked.connect(lambda *_: self.receive() if self.receive_btn.isVisible() else None)
         self.refresh()
 
     def _set_tab(self, tab):
@@ -711,7 +753,7 @@ class TransfersPage(QWidget):
             if d.exec():
                 short = d.result["short_m"]
                 if short:
-                    info(self, "Transfer received", f"{fmt_qty(short)} didn't arrive. The office sees this as lost on the way.")
+                    info(self, "Transfer received", f"{fmt_qty(short)} didn't arrive. The office sees it on the Missing stock report as lost on transfer.")
                 self._done()
 
     def cancel(self):
@@ -733,12 +775,13 @@ class InventoryReportsPage(QWidget):
         self.conn, self.user = conn, user
         root, _top = page_layout(self, "Inventory reports")
         tabs = QTabWidget()
-        root.addWidget(tabs, 1)
+        self.tabs = tabs
 
         value = QWidget()
         vl = QVBoxLayout(value)
         vl.addWidget(label("What each place holds, at the last purchase cost", "Muted"))
         self.value_table = make_table(["Place", "Products", "For sale", "Damaged and held", "Below zero", "No cost"], numeric=(1, 2, 3, 4, 5), stretch=0)
+        set_widths(self.value_table, {1: 80, 2: 130, 3: 140, 4: 90, 5: 80})
         vl.addWidget(self.value_table)
         tabs.addTab(value, "Stock value")
 
@@ -764,19 +807,34 @@ class InventoryReportsPage(QWidget):
         lost = QWidget()
         ll = QVBoxLayout(lost)
         ll.addWidget(label("Delivered lines that match no catalog product, so they're off the books. Add the product to the catalog with the same SKU.", "Muted"))
+        self.lost_empty = label("Every delivered line matches a catalog product.", "Muted")
+        ll.addWidget(self.lost_empty)
         self.lost_table = make_table(["Place", "PO number", "SKU", "Product", "Size", "Color", "Quantity", "Last moved"], numeric=(6,), stretch=3)
         ll.addWidget(self.lost_table)
         tabs.addTab(lost, "Not in the catalog")
         # Sales, fast and slow movers, missing stock and value by department come from the sales screens' module.
         from .sales_page import SalesReportsWidget
         self.sales = SalesReportsWidget(conn, user)
+        self.sales_pages = {}
         for _ in range(self.sales.count()):
             text = self.sales.tabText(0)
             page = self.sales.widget(0)
             self.sales.removeTab(0)
             tabs.insertTab(tabs.count(), page, text)
+            self.sales_pages[page] = text
+        # The sales tabs share one row of filters, shown above the tabs while one of them is open.
+        root.addWidget(self.sales.filters)
+        root.addWidget(tabs, 1)
+        tabs.currentChanged.connect(self._tab_changed)
         tabs.setCurrentIndex(0)
+        self._tab_changed()
         self.refresh()
+
+    def _tab_changed(self, *_):
+        text = self.sales_pages.get(self.tabs.currentWidget())
+        self.sales.filters.setVisible(text is not None)
+        if text is not None:
+            self.sales.show_filters_for(text)
 
     def refresh(self, *_):
         rows = service.valuation(self.conn, self.user)
@@ -791,3 +849,4 @@ class InventoryReportsPage(QWidget):
         lost = service.not_in_catalog(self.conn, self.user)
         fill_table(self.lost_table, [[r["location_name"], r["po_number"], r["item_code"], r["description"], r["size"], r["color"], fmt_qty(r["qty_m"]), fmt_datetime(r["last_at"])]
                                      for r in lost])
+        self.lost_empty.setVisible(not lost)

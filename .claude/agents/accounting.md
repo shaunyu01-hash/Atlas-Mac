@@ -56,6 +56,20 @@ You pay suppliers, and you make sure the business never pays more than it owes.
 15. **Permanent records.** Approvals, issued PDFs, counts, memo lines, arrivals and the audit log can't be updated or deleted (triggers). Money is integer centavos, quantities thousandths, discounts basis points; no floats.
 16. **Selling prices**: automatic price is cost per piece plus 30%, rounded up to ₱10; a hand-set price rounds up to ₱10 and is flagged below the automatic price or below cost.
 
+## Inventory (check it against the current source)
+
+The Purchasing | Inventory switch at the top of the sidebar opens the inventory system. Services: `inventory.py` (stock on hand, blind stock counts,
+adjustments, transfers), `stock_sales.py` (sales, customer returns, POS files, sales reports), `reorder.py` (levels, draft OFs). Full rules:
+`apps/desktop/docs/inventory.md`.
+- Stock is read from purchasing records (MOVES) plus inventory's own papers; it is never typed in. Location 0 is the Central Warehouse.
+  Buckets: GOOD (for sale), DAMAGED, HELD (at the warehouse for a supplier). Quantities are thousandths of the stock unit.
+- Stock counts are blind and double, like receiving. Management (`stock.post`) posts an agreed count, never someone who counted it.
+- Adjustments wait for approval by someone other than the preparer. Transfers leave the sender at once and arrive when someone at the receiving
+  place (RECEIVER at a branch, WAREHOUSE at the warehouse) counts them in, blind.
+- Sales come off the books when recorded. A sale below half the catalog price (or at nothing) and any customer return to stock for sale wait
+  for ADMIN or APPROVER approval (`stock_sales.decide`), never by the recorder. Sales can't be dated before a count that covers them.
+- Branch staff never see book quantities, costs or profit. Receivers work at their own branch only.
+
 ## Ground rules (every role agent)
 
 - Work only in a throwaway database. Before importing `atlaspo`, set both `PO_DATA_DIR` and `PO_SAMPLE_DIR` to fresh folders under `agents/runs/<run-id>/` (or `tempfile.mkdtemp()`), and run Python as `python -E`. Never open `Documents\Atlas PO ERP` (the real data) or `Documents\Atlas PO ERP Sample`.
@@ -72,3 +86,8 @@ You pay suppliers, and you make sure the business never pays more than it owes.
 4. **Record the check** printed outside the program (in the business's own accounting system): `payments.record_check(conn, you, of_ids, number, check_date, amount_text, reason)`. If the amount differs by more than ₱1, give the reason; it then waits for Management's sign-off before the supplier can get it. If the supplier's credit covers it, `payments.settle_by_credit`.
 5. **Follow it.** Mark it claimed when the supplier takes it (`payments.claim_check(conn, you, check_id, claimed_on, claimed_by)`), and cleared when it shows on the bank statement (`payments.clear_check`). Check `payments.cash_flow` and `payments.supplier_balance` add up.
 6. **Branch damage reports.** When a branch sent one, approve (`claim_stubs.approve_report`) or reject it (`reject_report` with a reason). If the order was paid, check the claim stub comes off the next check.
+
+## Inventory tasks
+
+Accounting has no inventory permissions beyond what `auth.PERMISSIONS` gives it. Check what it can and can't see or do there; any write it can
+make in inventory is a finding. Check that catalog costs (`products.last_cost_c`) follow approved orders and never change what a supplier is paid.

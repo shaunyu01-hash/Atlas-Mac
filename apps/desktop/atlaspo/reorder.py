@@ -4,10 +4,11 @@ Rules:
 - Each product at each branch has a minimum and a target, in its stock unit. The program works them out from sales: average daily sales
   over the last inventory.sales_days, times inventory.lead_days (the minimum), and times lead_days + cover_days (the target).
   A purchaser can set them by hand instead (reorder.edit); clearing them goes back to the program's figures.
-- A product needs ordering when what the branch has for sale, plus what's on the way and what's still due on open POs, is below the minimum.
-  The suggestion brings it up to the target, rounded up to whole order units (packs) unless the unit can be split.
+- A product needs ordering when what the branch has for sale, plus what's on the way, what's still due on open POs (less shortages already
+  charged on a debit memo) and what's on Order Forms not yet printed, is below the minimum. The suggestion brings it up to the target,
+  rounded up to whole order units (packs) unless the unit can be split.
 - Suggested orders become draft Order Forms, one per supplier, with each branch's quantity. They go through the usual approval.
-  Products with no supplier in the catalog, or never bought (no cost), are listed but can't be ordered here.
+  Products with no supplier, an inactive supplier, no cost or that are inactive are listed with the reason but can't be ordered here.
 - Only branches are suggested for: Order Forms deliver to branches through the Central Warehouse.
 """
 from __future__ import annotations
@@ -25,11 +26,22 @@ _OPEN_PO = (orders.APPROVED, orders.ISSUED, orders.PARTIAL)
 
 
 def on_order(conn) -> dict[tuple[int, int], int]:
-    """{(branch, product): stock units still due} on POs that are approved, issued or partly delivered."""
+    """{(branch, product): stock units still coming}: what's due on POs that are approved, issued or partly delivered, less pieces already
+    charged back on a shortage debit memo, plus each branch's quantity on Order Forms not yet turned into POs (drafts, waiting for
+    approval, or approved but not printed), so the same goods are never suggested twice."""
     out: dict[tuple[int, int], int] = {}
-    for r in conn.execute(f"SELECT p.branch_code, {inv._product_of('i.id')} AS pid, SUM(MAX(i.qty_m - i.received_qty_m, 0) * i.pieces_per_unit) AS due"
+    short = ("COALESCE((SELECT SUM(di.pieces_m) FROM debit_memo_items di JOIN debit_memos dm ON dm.id = di.dm_id"
+             " WHERE di.po_item_id = i.id AND di.reason = 'SHORT' AND dm.status = 'ISSUED'), 0)")
+    for r in conn.execute(f"SELECT p.branch_code, {inv._product_of('i.id')} AS pid,"
+                          f" SUM(MAX(MAX(i.qty_m - i.received_qty_m, 0) * i.pieces_per_unit - {short}, 0)) AS due"
                           f" FROM purchase_order_items i JOIN purchase_orders p ON p.id = i.po_id WHERE p.status IN ({','.join('?' * len(_OPEN_PO))})"
                           " GROUP BY p.branch_code, pid", _OPEN_PO):
+        if r["pid"] is not None and r["due"]:
+            out[(r["branch_code"], r["pid"])] = out.get((r["branch_code"], r["pid"]), 0) + r["due"]
+    for r in conn.execute("SELECT a.branch_code, COALESCE(i.product_id, (SELECT p.id FROM products p WHERE i.item_code <> '' AND p.item_code = i.item_code)) AS pid,"
+                          " SUM(a.qty_m * i.pieces_per_unit) AS due FROM order_form_allocations a JOIN order_form_items i ON i.id = a.of_item_id"
+                          " JOIN order_forms f ON f.id = i.of_id WHERE f.status IN ('DRAFT','PENDING_APPROVAL','APPROVED') AND f.pos_generated_at IS NULL"
+                          " GROUP BY a.branch_code, pid"):
         if r["pid"] is not None and r["due"]:
             out[(r["branch_code"], r["pid"])] = out.get((r["branch_code"], r["pid"]), 0) + r["due"]
     return out
@@ -44,7 +56,7 @@ def levels(conn, user: User, location: int | None = None, only_low: bool = True)
     stock = {(r["location"], r["product_id"]): r for r in inv.on_hand(conn, user)}
     due = on_order(conn)
     manual = {(r["location_code"], r["product_id"]): r for r in conn.execute("SELECT r.*, u.full_name AS set_name FROM reorder_levels r JOIN users u ON u.id = r.set_by")}
-    products = {r["id"]: r for r in conn.execute("SELECT p.*, s.name AS supplier FROM products p LEFT JOIN suppliers s ON s.id = p.supplier_id")}
+    products = {r["id"]: r for r in conn.execute("SELECT p.*, s.name AS supplier, s.status AS supplier_status FROM products p LEFT JOIN suppliers s ON s.id = p.supplier_id")}
     out = []
     for b in branches:
         per_day = daily_sales(conn, b["code"], days)
@@ -71,12 +83,14 @@ def levels(conn, user: User, location: int | None = None, only_low: bool = True)
                 units_m = need
             else:
                 units_m = int((Decimal(need) / 1000 / ppu).to_integral_value(rounding=ROUND_CEILING)) * 1000
+            why_not = ("No supplier in the catalog" if p["supplier_id"] is None else "Supplier is inactive" if p["supplier_status"] != "ACTIVE"
+                       else "No purchase cost" if p["last_cost_c"] is None else "Product is inactive" if not p["active"] else "")
             out.append({"location": b["code"], "location_name": b["name"], "product_id": pid, "item_code": p["item_code"], "description": p["description"],
                         "size": p["size"], "color": p["color"], "unit": inv.unit(p), "uom": p["uom"], "pieces_per_unit": ppu,
                         "supplier_id": p["supplier_id"], "supplier": p["supplier"] or "", "last_cost_c": p["last_cost_c"],
                         "good_m": good, "transit_m": moving, "on_order_m": coming, "per_day_m": int(daily), "min_m": minimum, "target_m": target,
                         "manual": m is not None, "set_by": m["set_name"] if m else "", "low": low, "need_m": need, "order_m": units_m,
-                        "orderable": p["supplier_id"] is not None and p["last_cost_c"] is not None and bool(p["active"])})
+                        "orderable": not why_not, "why_not": why_not})
     return sorted(out, key=lambda r: (r["supplier"].lower() or "~", r["item_code"].lower(), r["location"]))
 
 
@@ -115,7 +129,7 @@ def make_orders(conn, user: User, picks: list[tuple[int, int]], quantities: dict
         if r is None:
             raise POError("That product no longer needs ordering there. Refresh the list.")
         if not r["orderable"]:
-            raise POError(f"{r['item_code']} has no supplier or no purchase cost in the catalog, so it can't be ordered from here.")
+            raise POError(f"{r['item_code']} can't be ordered from here: {r['why_not'].lower()}" + (f" ({r['supplier']})." if r["supplier"] else "."))
         text = quantities.get(key)
         units_m = r["order_m"] if text is None or not str(text).strip() else inv._qty(text, {"item_code": r["item_code"], "uom": r["uom"], "pieces_per_unit": 1})
         if units_m <= 0:
@@ -133,7 +147,8 @@ def make_orders(conn, user: User, picks: list[tuple[int, int]], quantities: dict
                 p = inv._product(conn, pid)
                 lines.append({"department_id": p["department_id"], "product_id": pid, "item_code": p["item_code"], "supplier_item_code": p["supplier_item_code"],
                               "description": p["description"], "brand": p["brand"], "size": p["size"], "color": p["color"], "uom": p["uom"],
-                              "pieces_per_unit": p["pieces_per_unit"], "unit_cost_c": p["last_cost_c"], "allocations_m": item["allocations_m"]})
+                              "pieces_per_unit": p["pieces_per_unit"], "box_size": p["box_size"], "selling_c": p["selling_c"], "unit_cost_c": p["last_cost_c"],
+                              "allocations_m": item["allocations_m"]})
             of_id = order_forms.create_draft(conn, user, {"supplier_id": supplier_id, "of_date": today().isoformat(), "payment_terms": supplier["payment_terms"],
                                                           "remarks": "Suggested by inventory: products below their minimum."}, lines)
             audit(conn, user, "REORDER_DRAFT", "order_form", of_id, of_id=of_id, summary=f"Draft OF for {supplier['name']} from the reorder list, {len(lines)} products")

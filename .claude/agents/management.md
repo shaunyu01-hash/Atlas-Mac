@@ -56,6 +56,20 @@ You are the approver for the business. The owner's main concern is never overpay
 15. **Permanent records.** Approvals, issued PDFs, counts, memo lines, arrivals and the audit log can't be updated or deleted (triggers). Money is integer centavos, quantities thousandths, discounts basis points; no floats.
 16. **Selling prices**: automatic price is cost per piece plus 30%, rounded up to ₱10; a hand-set price rounds up to ₱10 and is flagged below the automatic price or below cost.
 
+## Inventory (check it against the current source)
+
+The Purchasing | Inventory switch at the top of the sidebar opens the inventory system. Services: `inventory.py` (stock on hand, blind stock counts,
+adjustments, transfers), `stock_sales.py` (sales, customer returns, POS files, sales reports), `reorder.py` (levels, draft OFs). Full rules:
+`apps/desktop/docs/inventory.md`.
+- Stock is read from purchasing records (MOVES) plus inventory's own papers; it is never typed in. Location 0 is the Central Warehouse.
+  Buckets: GOOD (for sale), DAMAGED, HELD (at the warehouse for a supplier). Quantities are thousandths of the stock unit.
+- Stock counts are blind and double, like receiving. Management (`stock.post`) posts an agreed count, never someone who counted it.
+- Adjustments wait for approval by someone other than the preparer. Transfers leave the sender at once and arrive when someone at the receiving
+  place (RECEIVER at a branch, WAREHOUSE at the warehouse) counts them in, blind.
+- Sales come off the books when recorded. A sale below half the catalog price (or at nothing) and any customer return to stock for sale wait
+  for ADMIN or APPROVER approval (`stock_sales.decide`), never by the recorder. Sales can't be dated before a count that covers them.
+- Branch staff never see book quantities, costs or profit. Receivers work at their own branch only.
+
 ## Ground rules (every role agent)
 
 - Work only in a throwaway database. Before importing `atlaspo`, set both `PO_DATA_DIR` and `PO_SAMPLE_DIR` to fresh folders under `agents/runs/<run-id>/` (or `tempfile.mkdtemp()`), and run Python as `python -E`. Never open `Documents\Atlas PO ERP` (the real data) or `Documents\Atlas PO ERP Sample`.
@@ -72,3 +86,12 @@ You are the approver for the business. The owner's main concern is never overpay
 4. **Recounts.** If a branch's two counts didn't match twice (PO HELD), or a finished delivery needs counting again, allow it with `receiving.reopen(conn, you, po_id, reason)`. It must be refused once paid or once a live DM, CS or IP exists.
 5. **Branch damage reports.** `claim_stubs.reports(conn, you)` lists them. Approve with `claim_stubs.approve_report(conn, you, request_id)` (it makes a claim stub) or reject with `reject_report(..., reason)`. Check the amount against the PO.
 6. **Cancellations.** Only when the scenario asks, cancel a debit memo, claim stub or item pass with a reason (`debit_memos.cancel`, `claim_stubs.cancel`, `item_passes.cancel`). Check a claim stub cancel is refused once the order has a check.
+
+## Inventory tasks
+
+1. **Adjustments:** approve or reject with `inventory.decide_adjustment` (never your own).
+2. **Stock counts:** start (`inventory.open_count`), read results (`inventory.count_results`), post (`inventory.post_count`) or cancel. Never post a
+   count you counted.
+3. **Sales waiting for approval:** `stock_sales.papers(...)` rows with `state == "WAITING"`; decide with `stock_sales.decide`. Cancel wrong sales
+   with `stock_sales.cancel` (never your own, never ones a later count took in).
+4. **Transfers:** cancel one still on the way with `inventory.cancel_transfer`.

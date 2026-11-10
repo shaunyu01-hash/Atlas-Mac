@@ -113,7 +113,7 @@ def test_sales_report_movers_and_shrinkage(stocked):
         sales.sales_report(w.conn, w.r1, _day(30), _day())
     movers = {r["item_code"]: r for r in sales.movers(w.conn, w.admin, NORTH)}
     assert movers["SOCK-1"]["sold_m"] == 6000 and movers["SOCK-1"]["days_left"] == 40  # 4 left, 0.1 a day over 60 days
-    assert movers["TEE-3"]["not_moving"]
+    assert not movers["TEE-3"]["not_moving"]  # never sold, but it only just arrived
     count = inv.open_count(w.conn, w.buyer, NORTH)
     inv.save_count(w.conn, w.r1, count, {w.socks: "3", w.tee: "6"})
     inv.save_count(w.conn, w.r2, count, {w.socks: "3", w.tee: "6"})

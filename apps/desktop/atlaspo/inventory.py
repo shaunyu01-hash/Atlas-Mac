@@ -11,13 +11,15 @@ Rules:
   Movements are permanent. A mistake is put right with another movement.
 - Buckets: GOOD is for sale. DAMAGED is at a branch, waiting for a claim stub or a write-off. HELD is at the warehouse, waiting for the
   supplier to collect it. Goods on the way (item passes printed, transfers sent) are shown as in transit at the place they're going to.
-- Orders first received before inventory.live_since stay out of the books, with everything that follows from them. The first stock count
-  at each place sets its opening stock.
+- Purchasing movements dated before inventory.live_since stay out of the books, each judged by its own date, so a later delivery on an
+  older PO still counts. The first stock count at each place sets its opening stock.
 - Sales and customer returns (stock_sales.py) take stock off and put it back the day they're recorded. A posted stock count moves the
   books to what was counted, so its difference is what went missing, or was sold without being recorded.
 - Stock may go below zero (sold before the delivery was counted, say). It is flagged, never blocked.
 - Stock counts are blind and double, like receiving: two people count without seeing the books or each other's figures. Lines they agree on
-  are fixed; the rest are counted again by two people. Management posts the agreed count.
+  are fixed; the rest are counted again by two people. Management posts the agreed count. Each product's difference is worked out against
+  the books as they stood when it was counted, so anything recorded after that (a sale typed in that evening) isn't counted twice.
+  A count can't start while a transfer is on its way there, and a transfer can't be counted in while its place is being counted.
 - Whoever prepares an adjustment never approves it, and whoever sends a transfer never receives it. Receivers work at their own branch only,
   the warehouse login at the warehouse only, and neither sees the books, costs or what was sent to them.
 """
@@ -50,7 +52,7 @@ TRANSFER_LABELS = {SENT: "On the way", RECEIVED: "Received", CANCELLED: "Cancell
 
 KINDS = {"RECEIVED": "Delivery received", "DAMAGE_FOUND": "Damage found later", "CS_SENT": "Damaged goods sent back",
          "CS_ARRIVED": "Claim stub goods arrived", "IP_SENT": "Excess sent back", "IP_ARRIVED": "Item pass goods arrived",
-         "COLLECTED": "Collected by supplier", "FORFEITED": "Forfeited, for sale", "RETURNED": "Returned to supplier",
+         "COLLECTED": "Collected by supplier", "FORFEITED": "Forfeited by the supplier", "CS_CANCELLED": "Claim stub cancelled, kept as damaged", "RETURNED": "Returned to supplier",
          "WRITTEN_OFF": "Written off on a debit memo", "SOLD": "Sold", "CUSTOMER_RETURN": "Customer return", "COUNT": "Stock count difference", "ADJUSTMENT": "Adjustment",
          "TRANSFER_OUT": "Transfer sent", "TRANSFER_IN": "Transfer received", "TRANSFER_BACK": "Transfer cancelled"}
 
@@ -62,10 +64,13 @@ NOT_YOURS = "That isn't your branch."
 # ------------------------------------------------------------------ where, and what
 
 def scope(user: User) -> set[int] | None:
-    """The places this person works at, or None for every place. Receivers have their branch; the warehouse login has the warehouse."""
+    """The places this person works at, or None for every place. Receivers have their branch; the warehouse login has the warehouse.
+    A receiver with no branch set gets no place at all, never every place."""
     if user.branch_code is not None:
         return {user.branch_code}
-    if user.roles == {"WAREHOUSE"}:
+    if "RECEIVER" in user.roles:
+        return set()
+    if "WAREHOUSE" in user.roles:
         return {WAREHOUSE}
     return None
 
@@ -164,62 +169,86 @@ def _product_of(col: str) -> str:
             f" ELSE (SELECT p.id FROM branch_extra_items e JOIN products p ON p.item_code = e.item_code WHERE e.id = -{col} AND e.item_code <> '') END)")
 
 
-_LIVE = "po.id IN (SELECT po_id FROM live_po)"
 _CS_COUNT = "COALESCE((SELECT g.pieces_m FROM goods_arrivals g WHERE g.kind = 'CS' AND g.item_id = ci.id), ci.pieces_m)"
 _IP_COUNT = "COALESCE((SELECT g.pieces_m FROM goods_arrivals g WHERE g.kind = 'IP' AND g.item_id = pi.id), pi.pieces_m)"
 _COLS = "moved_at, location, product_id, bucket, qty_m, kind, ref, po_id, po_item_id"
 
+
+def _first_received(item_col: str) -> str:
+    """When the branch first counted in a PO line: when damaged goods that later leave on a claim stub or a debit memo reached its books."""
+    return f"(SELECT MIN(r.accepted_at) FROM branch_received r WHERE r.po_id = po.id AND r.po_item_id = {item_col})"
+
+
+# When the pieces on a claim stub reached the branch's damaged stock: when the damage was found later, or when the line was counted in.
+_CS_DAMAGED_FROM = (f"(CASE WHEN EXISTS (SELECT 1 FROM late_damage ld WHERE ld.cs_id = cs.id) THEN cs.approved_at"
+                    f" ELSE COALESCE({_first_received('ci.po_item_id')}, cs.approved_at) END)")
+# Damaged pieces counted in on a line that wasn't on the PO (an extra, negative id). Its item pass sends every piece back, damaged ones too.
+_IP_DAMAGED = (f"(CASE WHEN pi.po_item_id < 0 THEN MIN(pi.pieces_m, COALESCE((SELECT SUM(r.damaged_m) FROM branch_received r"
+               f" WHERE r.po_id = po.id AND r.po_item_id = pi.po_item_id AND {_IN_FORCE}), 0)) ELSE 0 END)")
+# Sales waiting for approval, or rejected, never touch the books.
+_NOT_HELD_BACK = "NOT EXISTS (SELECT 1 FROM sale_holds h WHERE h.sale_id = s.id AND h.decision IS NOT 'APPROVED')"
+
 # One row per movement: (moved_at, location, product_id, bucket, qty_m, kind, ref, po_id, po_item_id). product_id is NULL for a purchased
 # line that isn't in the catalog; those are listed by not_in_catalog and kept off the books. Bound parameter: :since.
+# Purchasing movements before :since (inventory.live_since) are left out one by one, each by its own date. Goods leaving damaged or held
+# stock are left out when they entered it before :since, so what never reached the books never leaves them.
 MOVES = f"""
-live_po AS (SELECT po_id FROM branch_received GROUP BY po_id HAVING MIN(accepted_at) >= :since),
 moves({_COLS}) AS (
     SELECT r.accepted_at, po.branch_code, {_product_of('r.po_item_id')}, 'GOOD', r.pieces_m - r.damaged_m, 'RECEIVED', po.po_number, po.id, r.po_item_id
-      FROM branch_received r JOIN purchase_orders po ON po.id = r.po_id WHERE {_IN_FORCE} AND {_LIVE}
+      FROM branch_received r JOIN purchase_orders po ON po.id = r.po_id WHERE {_IN_FORCE} AND r.accepted_at >= :since
     UNION ALL
     SELECT r.accepted_at, po.branch_code, {_product_of('r.po_item_id')}, 'DAMAGED', r.damaged_m, 'RECEIVED', po.po_number, po.id, r.po_item_id
-      FROM branch_received r JOIN purchase_orders po ON po.id = r.po_id WHERE r.damaged_m > 0 AND {_IN_FORCE} AND {_LIVE}
+      FROM branch_received r JOIN purchase_orders po ON po.id = r.po_id WHERE r.damaged_m > 0 AND {_IN_FORCE} AND r.accepted_at >= :since
     UNION ALL
     SELECT cs.approved_at, po.branch_code, {_product_of('ci.po_item_id')}, b.bucket, CASE b.bucket WHEN 'GOOD' THEN -ci.pieces_m ELSE ci.pieces_m END,
            'DAMAGE_FOUND', cs.cs_number, po.id, ci.po_item_id
       FROM claim_stubs cs JOIN late_damage ld ON ld.cs_id = cs.id JOIN claim_stub_items ci ON ci.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id
       JOIN (SELECT 'GOOD' AS bucket UNION ALL SELECT 'DAMAGED') b
-     WHERE NOT (cs.status = 'CANCELLED' AND cs.arrived_at IS NULL) AND {_LIVE}
+     WHERE NOT (cs.status = 'CANCELLED' AND cs.arrived_at IS NULL) AND cs.approved_at >= :since
     UNION ALL
     SELECT cs.arrived_at, po.branch_code, {_product_of('ci.po_item_id')}, 'DAMAGED', -ci.pieces_m, 'CS_SENT', cs.cs_number, po.id, ci.po_item_id
-      FROM claim_stubs cs JOIN claim_stub_items ci ON ci.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id WHERE cs.arrived_at IS NOT NULL AND {_LIVE}
+      FROM claim_stubs cs JOIN claim_stub_items ci ON ci.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id
+     WHERE cs.arrived_at IS NOT NULL AND {_CS_DAMAGED_FROM} >= :since
     UNION ALL
     SELECT cs.arrived_at, 0, {_product_of('ci.po_item_id')}, 'HELD', {_CS_COUNT}, 'CS_ARRIVED', cs.cs_number, po.id, ci.po_item_id
-      FROM claim_stubs cs JOIN claim_stub_items ci ON ci.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id WHERE cs.arrived_at IS NOT NULL AND {_LIVE}
+      FROM claim_stubs cs JOIN claim_stub_items ci ON ci.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id WHERE cs.arrived_at >= :since
     UNION ALL
-    SELECT cs.closed_at, 0, {_product_of('ci.po_item_id')}, b.bucket, CASE b.bucket WHEN 'HELD' THEN -{_CS_COUNT} ELSE {_CS_COUNT} END,
-           cs.status, cs.cs_number, po.id, ci.po_item_id
+    SELECT cs.closed_at, 0, {_product_of('ci.po_item_id')}, b.bucket, CASE WHEN b.bucket = 'HELD' THEN -{_CS_COUNT} ELSE {_CS_COUNT} END,
+           CASE cs.status WHEN 'CANCELLED' THEN 'CS_CANCELLED' ELSE cs.status END, cs.cs_number, po.id, ci.po_item_id
       FROM claim_stubs cs JOIN claim_stub_items ci ON ci.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id
-      JOIN (SELECT 'HELD' AS bucket UNION ALL SELECT 'GOOD') b
-     WHERE cs.status IN ('COLLECTED','FORFEITED') AND cs.arrived_at IS NOT NULL AND (b.bucket = 'HELD' OR cs.status = 'FORFEITED') AND {_LIVE}
+      JOIN (SELECT 'HELD' AS bucket UNION ALL SELECT 'GOOD' UNION ALL SELECT 'DAMAGED') b
+     WHERE cs.status IN ('COLLECTED','FORFEITED','CANCELLED') AND cs.arrived_at IS NOT NULL
+       AND ((b.bucket = 'HELD' AND cs.arrived_at >= :since)
+            OR (b.bucket = 'GOOD' AND cs.status = 'FORFEITED' AND cs.closed_at >= :since)
+            OR (b.bucket = 'DAMAGED' AND cs.status = 'CANCELLED' AND cs.closed_at >= :since))
     UNION ALL
-    SELECT ip.printed_at, po.branch_code, {_product_of('pi.po_item_id')}, 'GOOD', -pi.pieces_m, 'IP_SENT', ip.ip_number, po.id, pi.po_item_id
-      FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id JOIN purchase_orders po ON po.id = ip.po_id WHERE ip.status <> 'CANCELLED' AND {_LIVE}
+    SELECT ip.printed_at, po.branch_code, {_product_of('pi.po_item_id')}, b.bucket,
+           CASE b.bucket WHEN 'GOOD' THEN {_IP_DAMAGED} - pi.pieces_m ELSE -{_IP_DAMAGED} END, 'IP_SENT', ip.ip_number, po.id, pi.po_item_id
+      FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id JOIN purchase_orders po ON po.id = ip.po_id
+      JOIN (SELECT 'GOOD' AS bucket UNION ALL SELECT 'DAMAGED') b
+     WHERE ip.status <> 'CANCELLED' AND ip.printed_at >= :since
     UNION ALL
     SELECT ip.arrived_at, 0, {_product_of('pi.po_item_id')}, 'HELD', {_IP_COUNT}, 'IP_ARRIVED', ip.ip_number, po.id, pi.po_item_id
-      FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id JOIN purchase_orders po ON po.id = ip.po_id WHERE ip.arrived_at IS NOT NULL AND ip.status <> 'CANCELLED' AND {_LIVE}
+      FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id JOIN purchase_orders po ON po.id = ip.po_id
+     WHERE ip.arrived_at >= :since AND ip.status <> 'CANCELLED'
     UNION ALL
     SELECT ip.closed_at, 0, {_product_of('pi.po_item_id')}, b.bucket, CASE b.bucket WHEN 'HELD' THEN -{_IP_COUNT} ELSE {_IP_COUNT} END,
            ip.status, ip.ip_number, po.id, pi.po_item_id
       FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id JOIN purchase_orders po ON po.id = ip.po_id
       JOIN (SELECT 'HELD' AS bucket UNION ALL SELECT 'GOOD') b
-     WHERE ip.status IN ('COLLECTED','FORFEITED') AND ip.arrived_at IS NOT NULL AND (b.bucket = 'HELD' OR ip.status = 'FORFEITED') AND {_LIVE}
+     WHERE ip.status IN ('COLLECTED','FORFEITED') AND ip.arrived_at IS NOT NULL
+       AND ((b.bucket = 'HELD' AND ip.arrived_at >= :since) OR (b.bucket = 'GOOD' AND ip.status = 'FORFEITED' AND ip.closed_at >= :since))
     UNION ALL
     SELECT x.returned_at, po.branch_code, {_product_of('x.po_item_id')}, 'GOOD', -x.pieces_m, 'RETURNED', po.po_number, po.id, x.po_item_id
-      FROM excess_returns x JOIN purchase_orders po ON po.id = x.po_id WHERE {_LIVE}
+      FROM excess_returns x JOIN purchase_orders po ON po.id = x.po_id WHERE x.returned_at >= :since
     UNION ALL
     SELECT dm.prepared_at, po.branch_code, {_product_of('di.po_item_id')}, 'DAMAGED', -di.pieces_m, 'WRITTEN_OFF', dm.dm_number, po.id, di.po_item_id
       FROM debit_memos dm JOIN debit_memo_items di ON di.dm_id = dm.id JOIN purchase_orders po ON po.id = dm.po_id
-     WHERE dm.status = 'ISSUED' AND di.reason = 'DAMAGED' AND {_LIVE}
+     WHERE dm.status = 'ISSUED' AND di.reason = 'DAMAGED' AND COALESCE({_first_received('di.po_item_id')}, dm.prepared_at) >= :since
     UNION ALL
     SELECT MIN(s.sale_date || ' 23:59:59', s.entered_at), s.location_code, l.product_id, l.bucket,
            CASE s.kind WHEN 'SALE' THEN -l.qty_m ELSE l.qty_m END, CASE s.kind WHEN 'SALE' THEN 'SOLD' ELSE 'CUSTOMER_RETURN' END, s.sale_number, NULL, NULL
-      FROM stock_sales s JOIN stock_sale_lines l ON l.sale_id = s.id WHERE s.status = 'POSTED'
+      FROM stock_sales s JOIN stock_sale_lines l ON l.sale_id = s.id WHERE s.status = 'POSTED' AND {_NOT_HELD_BACK}
     UNION ALL
     SELECT m.moved_at, m.location_code, m.product_id, m.bucket, m.qty_m, m.kind,
            CASE WHEN m.kind = 'COUNT' THEN (SELECT count_number FROM stock_counts WHERE id = m.ref_id)
@@ -247,9 +276,8 @@ def _in_transit(conn) -> dict[tuple[int, int], int]:
     """{(location, product_id): quantity} on the way there: excess going back to the warehouse, and transfers sent."""
     out: dict[tuple[int, int], int] = defaultdict(int)
     for loc, pid, qty in conn.execute(
-            f"WITH live_po AS (SELECT po_id FROM branch_received GROUP BY po_id HAVING MIN(accepted_at) >= :since)"
-            f" SELECT 0, {_product_of('pi.po_item_id')} AS pid, SUM(pi.pieces_m) FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id"
-            f" JOIN purchase_orders po ON po.id = ip.po_id WHERE ip.status = 'PRINTED' AND {_LIVE} GROUP BY pid", _params(conn)):
+            f"SELECT 0, {_product_of('pi.po_item_id')} AS pid, SUM(pi.pieces_m) FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id"
+            f" JOIN purchase_orders po ON po.id = ip.po_id WHERE ip.status = 'PRINTED' AND ip.printed_at >= :since GROUP BY pid", _params(conn)):
         if pid is not None:
             out[(loc, pid)] += qty
     for loc, pid, qty in conn.execute("SELECT t.to_code, l.product_id, SUM(l.sent_m) FROM stock_transfers t JOIN stock_transfer_lines l ON l.transfer_id = t.id"
@@ -404,6 +432,9 @@ def open_count(conn, user: User, location: int, department_id: int | None = None
         busy = conn.execute("SELECT count_number FROM stock_counts WHERE location_code = ? AND status IN ('COUNTING','AGREED')", (location,)).fetchone()
         if busy:
             raise POError(f"{place_name(conn, location)} is already being counted on {busy[0]}. Post or cancel it first.")
+        coming = conn.execute("SELECT transfer_number FROM stock_transfers WHERE to_code = ? AND status = 'SENT' ORDER BY id LIMIT 1", (location,)).fetchone()
+        if coming:
+            raise POError(f"Transfer {coming[0]} is on its way to {place_name(conn, location)}. Count it in, or cancel it, before starting a count.")
         number = _number(conn, "SC")
         count_id = conn.execute("INSERT INTO stock_counts(count_number, location_code, department_id, status, note, opened_by, opened_at) VALUES (?,?,?,?,?,?,?)",
                                 (number, location, department_id, COUNTING, (note or "").strip(), user.id, timestamp())).lastrowid
@@ -547,12 +578,22 @@ def count_results(conn, user: User, count_id: int) -> dict:
     for r in conn.execute("SELECT e.product_id, e.round_no, u.full_name, e.qty_m FROM stock_count_entries e JOIN users u ON u.id = e.counted_by WHERE e.count_id = ? ORDER BY e.round_no, e.counted_at",
                           (count_id,)):
         entries[r["product_id"]].append(f"R{r['round_no']} {r['full_name']}: {fmt_qty(r['qty_m'])}")
+    if count["status"] == POSTED:
+        posted = {r[0]: r[1] for r in conn.execute("SELECT product_id, qty_m FROM stock_movements WHERE kind = 'COUNT' AND ref_id = ?", (count_id,))}
+        books = None
+    else:
+        posted = {}
+        books = _books_when_counted(conn, count) if count["status"] in (COUNTING, AGREED) else None
     lines = []
     for r in conn.execute("SELECT l.*, p.item_code, p.description, p.size, p.color, p.uom, p.pieces_per_unit, p.last_cost_c FROM stock_count_lines l JOIN products p ON p.id = l.product_id"
                           " WHERE l.count_id = ? ORDER BY p.item_code", (count_id,)):
-        diff = None if r["agreed_m"] is None else r["agreed_m"] - r["book_m"]
+        if count["status"] == POSTED:
+            book_m = r["agreed_m"] - posted.get(r["product_id"], 0)
+        else:
+            book_m = books.get(r["product_id"], 0) if books is not None else r["book_m"]
+        diff = None if r["agreed_m"] is None else r["agreed_m"] - book_m
         lines.append({"product_id": r["product_id"], "item_code": r["item_code"], "description": r["description"], "size": r["size"], "color": r["color"],
-                      "unit": unit(r), "book_m": r["book_m"], "agreed_m": r["agreed_m"], "diff_m": diff, "found": r["added_by"] is not None,
+                      "unit": unit(r), "book_m": book_m, "start_m": r["book_m"], "agreed_m": r["agreed_m"], "diff_m": diff, "found": r["added_by"] is not None,
                       "counts": "; ".join(entries.get(r["product_id"], [])), "diff_value_c": value_c(diff or 0, r) if show_cost else None})
     return {**dict(count), "location_name": place_name(conn, count["location_code"]), "department": _dept_name(conn, count["department_id"]),
             "status_label": COUNT_LABELS[count["status"]], "lines": lines, "moved_since": moved_since(conn, count_id),
@@ -561,14 +602,30 @@ def count_results(conn, user: User, count_id: int) -> dict:
 
 
 def moved_since(conn, count_id: int) -> int:
-    """How many movements reached this place's good stock after the count started. The count assumes none did, so the office is told."""
+    """How many movements reached this place's good stock after the count started. Posting allows for them; the office sees how many."""
     count = _count(conn, count_id)
     return conn.execute(_moves_sql("location = :loc AND bucket = 'GOOD' AND moved_at > :at AND NOT (kind = 'COUNT')", "COUNT(*)"),
                         _params(conn, loc=count["location_code"], at=count["opened_at"])).fetchone()[0]
 
 
+def _books_when_counted(conn, count) -> dict[int, int]:
+    """{product_id: good stock on the books when that product was last counted on this count}, read now, so movements recorded later
+    but dated before the counting are in, and those dated after it are out. A product not counted yet is taken as of now."""
+    when = {r[0]: r[1] for r in conn.execute(
+        "SELECT e.product_id, MAX(e.counted_at) FROM stock_count_entries e WHERE e.count_id = ?"
+        " AND e.round_no = (SELECT MAX(x.round_no) FROM stock_count_entries x WHERE x.count_id = e.count_id AND x.product_id = e.product_id) GROUP BY e.product_id",
+        (count["id"],))}
+    ids = [r[0] for r in conn.execute("SELECT product_id FROM stock_count_lines WHERE count_id = ?", (count["id"],))]
+    books = dict.fromkeys(ids, 0)
+    for pid, moved_at, qty in conn.execute(_moves_sql("location = :loc AND bucket = 'GOOD' AND product_id IS NOT NULL", "product_id, moved_at, qty_m"),
+                                           _params(conn, loc=count["location_code"])):
+        if pid in books and (pid not in when or (moved_at or "") <= when[pid]):
+            books[pid] += qty
+    return books
+
+
 def post_count(conn, user: User, count_id: int) -> int:
-    """Moves the books to what was counted: each product's agreed figure less the books when the count started. Returns how many products changed."""
+    """Moves the books to what was counted: each product's agreed figure less the books when it was counted. Returns how many products changed."""
     require(user, "stock.post")
     with tx(conn):
         count = _count(conn, count_id)
@@ -578,8 +635,9 @@ def post_count(conn, user: User, count_id: int) -> int:
         if conn.execute("SELECT 1 FROM stock_count_entries WHERE count_id = ? AND counted_by = ?", (count_id, user.id)).fetchone():
             raise POError("You counted this stock, so someone else posts it.")
         stamp = timestamp()
-        diffs = [(count["location_code"], r["product_id"], GOOD, r["agreed_m"] - r["book_m"], "COUNT", count_id, user.id, stamp)
-                 for r in conn.execute("SELECT * FROM stock_count_lines WHERE count_id = ?", (count_id,)) if r["agreed_m"] != r["book_m"]]
+        books = _books_when_counted(conn, count)
+        diffs = [(count["location_code"], r["product_id"], GOOD, r["agreed_m"] - books[r["product_id"]], "COUNT", count_id, user.id, stamp)
+                 for r in conn.execute("SELECT * FROM stock_count_lines WHERE count_id = ?", (count_id,)) if r["agreed_m"] != books[r["product_id"]]]
         conn.executemany("INSERT INTO stock_movements(location_code, product_id, bucket, qty_m, kind, ref_id, moved_by, moved_at) VALUES (?,?,?,?,?,?,?,?)", diffs)
         conn.execute("UPDATE stock_counts SET status = ?, closed_by = ?, closed_at = ? WHERE id = ?", (POSTED, user.id, stamp, count_id))
         short = sum(-d[3] for d in diffs if d[3] < 0)
@@ -756,11 +814,16 @@ def receive_transfer(conn, user: User, transfer_id: int, figures: dict[int, str]
     require(user, "transfer.receive")
     with tx(conn):
         t = _transfer(conn, transfer_id)
+        if scope(user) is None:
+            raise POError("Only someone working at the place it went to counts a transfer in.")
         _check_place(conn, user, t["to_code"])
         if t["status"] != SENT:
             raise POError("This transfer is already finished.")
         if t["sent_by"] == user.id:
             raise POError("You sent this transfer, so someone at the other end counts it in.")
+        busy = conn.execute("SELECT count_number FROM stock_counts WHERE location_code = ? AND status IN ('COUNTING','AGREED')", (t["to_code"],)).fetchone()
+        if busy:
+            raise POError(f"{place_name(conn, t['to_code'])} is being counted on {busy[0]}. Keep these goods apart and count them in once the count is posted.")
         lines = {r["product_id"]: r for r in conn.execute("SELECT l.*, p.item_code, p.uom, p.pieces_per_unit FROM stock_transfer_lines l JOIN products p ON p.id = l.product_id WHERE l.transfer_id = ?",
                                                          (transfer_id,))}
         missing = [r["item_code"] for pid, r in lines.items() if str(figures.get(pid, "")).strip() == ""]

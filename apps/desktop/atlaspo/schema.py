@@ -22,7 +22,7 @@ Issued documents keep what they printed.
 
 import re
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 DDL = """
 CREATE TABLE departments (
@@ -2201,4 +2201,53 @@ CREATE TABLE IF NOT EXISTS reorder_levels (
 INSERT INTO audit_logs(occurred_at, user_name, action, entity_type, summary)
 VALUES (datetime('now','localtime'), 'system', 'MIGRATE_V30', 'system', 'Inventory: sales and customer returns, and reorder levels.');
 PRAGMA user_version = 30;
+"""
+
+
+# ------------------------------------------------------------------ version 31: sales approval, and decided inventory papers locked
+
+# A sale far below the catalog price, and a customer return to stock for sale, could hide missing stock, so they wait for management
+# before they reach the books (sale_holds). Decided adjustments, finished counts and transfers, and cancelled sales can no longer have any
+# column changed, and a stock movement must point at a paper in the right state.
+MIGRATE_V31 = """
+CREATE TABLE IF NOT EXISTS sale_holds (
+    sale_id INTEGER PRIMARY KEY REFERENCES stock_sales(id),
+    reason TEXT NOT NULL,
+    decision TEXT CHECK (decision IN ('APPROVED','REJECTED')),
+    decided_by INTEGER REFERENCES users(id),
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT '',
+    CHECK ((decision IS NULL) = (decided_by IS NULL))
+);
+CREATE TRIGGER IF NOT EXISTS sale_holds_only_new BEFORE INSERT ON sale_holds
+WHEN EXISTS (SELECT 1 FROM stock_sale_lines WHERE sale_id = NEW.sale_id)
+BEGIN SELECT RAISE(ABORT, 'Only new sales can wait for approval'); END;
+CREATE TRIGGER IF NOT EXISTS sale_holds_decided_once BEFORE UPDATE ON sale_holds
+WHEN OLD.decision IS NOT NULL OR NEW.sale_id IS NOT OLD.sale_id OR NEW.reason IS NOT OLD.reason
+  OR NEW.decided_by = (SELECT entered_by FROM stock_sales WHERE id = NEW.sale_id)
+BEGIN SELECT RAISE(ABORT, 'Sales are approved once, by someone other than who recorded them'); END;
+CREATE TRIGGER IF NOT EXISTS sale_holds_no_delete BEFORE DELETE ON sale_holds
+BEGIN SELECT RAISE(ABORT, 'An approval record cannot be deleted'); END;
+
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_decided_locked BEFORE UPDATE ON stock_adjustments
+WHEN OLD.status <> 'PENDING'
+BEGIN SELECT RAISE(ABORT, 'A decided adjustment stays as it is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfer_finished_locked BEFORE UPDATE ON stock_transfers
+WHEN OLD.status <> 'SENT'
+BEGIN SELECT RAISE(ABORT, 'A finished transfer stays as it is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_finished_locked BEFORE UPDATE ON stock_counts
+WHEN OLD.status IN ('POSTED','CANCELLED')
+BEGIN SELECT RAISE(ABORT, 'A finished stock count stays as it is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sale_cancelled_locked BEFORE UPDATE ON stock_sales
+WHEN OLD.status = 'CANCELLED'
+BEGIN SELECT RAISE(ABORT, 'Cancelled sales stay cancelled'); END;
+CREATE TRIGGER IF NOT EXISTS stock_movements_from_a_paper BEFORE INSERT ON stock_movements
+WHEN NOT ((NEW.kind = 'ADJUSTMENT' AND (SELECT status FROM stock_adjustments WHERE id = NEW.ref_id) IS 'APPROVED')
+       OR (NEW.kind = 'COUNT' AND (SELECT status FROM stock_counts WHERE id = NEW.ref_id) IS 'AGREED')
+       OR (NEW.kind IN ('TRANSFER_OUT','TRANSFER_IN','TRANSFER_BACK') AND (SELECT status FROM stock_transfers WHERE id = NEW.ref_id) IS 'SENT'))
+BEGIN SELECT RAISE(ABORT, 'A stock movement comes from an approved adjustment, an agreed count or a transfer on its way'); END;
+
+INSERT INTO audit_logs(occurred_at, user_name, action, entity_type, summary)
+VALUES (datetime('now','localtime'), 'system', 'MIGRATE_V31', 'system', 'Inventory: unusual sales wait for approval; decided inventory papers are locked.');
+PRAGMA user_version = 31;
 """

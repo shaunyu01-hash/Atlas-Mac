@@ -9,7 +9,7 @@ PySide6 desktop program over one SQLite file. It is complete, it is in productio
 ```
 atlaspo/            services: pure business logic, no Qt
   db.py             connect, tx(), audit(), settings, data folder, migration runner
-  schema.py         every table, trigger and migration (MIGRATE_V2 … MIGRATE_V30), plus SCHEMA_VERSION
+  schema.py         every table, trigger and migration (MIGRATE_V2 … MIGRATE_V31), plus SCHEMA_VERSION
   auth.py           users, ROLES, PERMISSIONS map, require(user, perm)
   money.py          all arithmetic: Decimal in, whole centavos out
   order_forms.py    OF lifecycle: draft → approval → numbering → PO generation, amendments

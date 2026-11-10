@@ -4,6 +4,7 @@ from __future__ import annotations
 import difflib
 import re
 import unicodedata
+from decimal import ROUND_HALF_UP, Decimal
 
 from .auth import User, require
 from .db import POError, audit, timestamp, tx
@@ -288,6 +289,9 @@ def _store_product(conn, user: User, data: dict, product_id: int | None = None) 
         if old is None:
             raise POError("That product no longer exists.")
         changed = {k: d[k] for k in PRODUCT_FIELDS if old[k] != d[k]}
+        if "pieces_per_unit" in changed and _has_stock(conn, product_id):
+            raise POError(f"{old['item_code']} already has stock on the books, so its pieces per unit can't change: every piece counted so far "
+                          "would change meaning. Add the new pack size as a new product.")
         if changed:
             sets = ", ".join(f"{k} = ?" for k in changed)
             conn.execute(f"UPDATE products SET {sets}, updated_at = ? WHERE id = ?", [*changed.values(), stamp, product_id])
@@ -295,6 +299,17 @@ def _store_product(conn, user: User, data: dict, product_id: int | None = None) 
             audit(conn, user, action, "product", product_id, summary=d["item_code"],
                   previous={k: old[k] for k in changed}, new=changed)
         return product_id
+
+
+def _has_stock(conn, product_id: int) -> bool:
+    """Whether inventory has counted this product in pieces anywhere: received on a PO, or on any inventory paper."""
+    for sql in ("SELECT 1 FROM purchase_order_items WHERE product_id = ? AND received_qty_m > 0",
+                "SELECT 1 FROM stock_movements WHERE product_id = ?", "SELECT 1 FROM stock_sale_lines WHERE product_id = ?",
+                "SELECT 1 FROM stock_count_entries WHERE product_id = ?", "SELECT 1 FROM stock_transfer_lines WHERE product_id = ?",
+                "SELECT 1 FROM stock_adjustment_lines WHERE product_id = ?"):
+        if conn.execute(sql + " LIMIT 1", (product_id,)).fetchone():
+            return True
+    return False
 
 
 def _same_code(conn, code: str) -> list:
@@ -325,24 +340,50 @@ def check_skus(conn, supplier_id: int, items: list[dict]) -> None:
 def record_products(conn, user: User, supplier_id: int, items: list[dict]) -> None:
     """On approval, every new SKU goes in the catalog under its supplier and the row is linked to it. Rows without a SKU stay one-offs.
 
-    An existing product is never overwritten. It's the order being approved that adds the product, so this doesn't need the approver to hold catalog rights,
+    An existing product keeps its details, except its cost: that becomes the approved price, so stock value, profit and reorder drafts use
+    what the goods cost last. It's the order being approved that adds the product, so this doesn't need the approver to hold catalog rights,
     but it does need someone who works on orders or the catalog.
     """
     if not any(user.can(p) for p in ("master.edit", "of.edit", "of.amend", "of.approve")):
         require(user, "master.edit")
     check_skus(conn, supplier_id, items)
+    costed: set[int] = set()  # a product on the order twice takes its cost from its first line
     for item in items:
         code = item["item_code"]
-        if not code or item.get("product_id"):
+        if item.get("product_id"):
+            if item["product_id"] not in costed:
+                _approved_cost(conn, user, item["product_id"], item)
+                costed.add(item["product_id"])
+            continue
+        if not code:
             continue
         known = next(iter(_same_code(conn, code)), None)
         if known:
             item["product_id"] = known["id"]
+            if known["id"] not in costed:
+                _approved_cost(conn, user, known["id"], item)
+                costed.add(known["id"])
             continue
         item["product_id"] = _store_product(conn, user, {
             "item_code": code, "department_id": item["department_id"], "description": item["description"], "brand": item["brand"], "size": item["size"],
             "color": item["color"], "uom": item["uom"], "pieces_per_unit": item["pieces_per_unit"], "box_size": item["box_size"], "supplier_id": supplier_id,
             "supplier_item_code": item["supplier_item_code"], "last_cost_c": item["unit_cost_c"], "selling_c": item["selling_c"]})
+        costed.add(item["product_id"])
+
+
+def _approved_cost(conn, user: User, product_id: int, item: dict) -> None:
+    """The catalog cost becomes an approved order line's unit cost, per the product's own pack size. Audited when it changes."""
+    p = conn.execute("SELECT item_code, pieces_per_unit, last_cost_c FROM products WHERE id = ?", (product_id,)).fetchone()
+    if p is None or item.get("unit_cost_c") is None:
+        return
+    line_ppu, own_ppu = int(item.get("pieces_per_unit") or 1), int(p["pieces_per_unit"] or 1)
+    cost = int(item["unit_cost_c"]) if line_ppu == own_ppu else int((Decimal(int(item["unit_cost_c"])) * own_ppu / line_ppu).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    if cost == p["last_cost_c"]:
+        return
+    with tx(conn):
+        conn.execute("UPDATE products SET last_cost_c = ?, updated_at = ? WHERE id = ?", (cost, timestamp(), product_id))
+        audit(conn, user, "PRODUCT_COST_CHANGE", "product", product_id, summary=f"{p['item_code']}: cost from an approved order",
+              previous={"last_cost_c": p["last_cost_c"]}, new={"last_cost_c": cost})
 
 
 def search_products(conn, text: str = "", department_id: int | None = None, supplier_id: int | None = None,

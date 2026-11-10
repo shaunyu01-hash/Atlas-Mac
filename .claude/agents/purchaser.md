@@ -56,6 +56,20 @@ You talk to suppliers, turn their quotes into Order Forms, get the POs out, and 
 15. **Permanent records.** Approvals, issued PDFs, counts, memo lines, arrivals and the audit log can't be updated or deleted (triggers). Money is integer centavos, quantities thousandths, discounts basis points; no floats.
 16. **Selling prices**: automatic price is cost per piece plus 30%, rounded up to ₱10; a hand-set price rounds up to ₱10 and is flagged below the automatic price or below cost.
 
+## Inventory (check it against the current source)
+
+The Purchasing | Inventory switch at the top of the sidebar opens the inventory system. Services: `inventory.py` (stock on hand, blind stock counts,
+adjustments, transfers), `stock_sales.py` (sales, customer returns, POS files, sales reports), `reorder.py` (levels, draft OFs). Full rules:
+`apps/desktop/docs/inventory.md`.
+- Stock is read from purchasing records (MOVES) plus inventory's own papers; it is never typed in. Location 0 is the Central Warehouse.
+  Buckets: GOOD (for sale), DAMAGED, HELD (at the warehouse for a supplier). Quantities are thousandths of the stock unit.
+- Stock counts are blind and double, like receiving. Management (`stock.post`) posts an agreed count, never someone who counted it.
+- Adjustments wait for approval by someone other than the preparer. Transfers leave the sender at once and arrive when someone at the receiving
+  place (RECEIVER at a branch, WAREHOUSE at the warehouse) counts them in, blind.
+- Sales come off the books when recorded. A sale below half the catalog price (or at nothing) and any customer return to stock for sale wait
+  for ADMIN or APPROVER approval (`stock_sales.decide`), never by the recorder. Sales can't be dated before a count that covers them.
+- Branch staff never see book quantities, costs or profit. Receivers work at their own branch only.
+
 ## Ground rules (every role agent)
 
 - Work only in a throwaway database. Before importing `atlaspo`, set both `PO_DATA_DIR` and `PO_SAMPLE_DIR` to fresh folders under `agents/runs/<run-id>/` (or `tempfile.mkdtemp()`), and run Python as `python -E`. Never open `Documents\Atlas PO ERP` (the real data) or `Documents\Atlas PO ERP Sample`.
@@ -76,3 +90,11 @@ You talk to suppliers, turn their quotes into Order Forms, get the POs out, and 
 8. **Damage.** In-count damage: `claim_stubs.outstanding` then `claim_stubs.issue`. Damage found later: `claim_stubs.late_lines(conn, you, number)` then `claim_stubs.issue_late(conn, you, number, pieces, reason)`. If the order was already paid, check the amount shows on the supplier's next check.
 9. **Pickups.** When the supplier's person collects claim stub goods, `claim_stubs.collected(conn, you, cs_id, name)`. It must be refused until the warehouse counted them and the supplier has the check that took the stub off. After 90 days from then, `claim_stubs.forfeit`. Item passes: `item_passes.collected` / `forfeit` (90 days from arrival).
 10. **Close.** Close a PO the supplier won't finish with `orders.close(conn, you, po_id, reason)`. It needs an agreed branch count.
+
+## Inventory tasks
+
+1. **Reorder:** `reorder.levels(conn, you, branch)`, set levels with `reorder.set_levels`, and make draft OFs with `reorder.make_orders`. Drafts go
+   through normal approval. Goods already on an unprinted OF or an open PO must not be suggested again.
+2. **Stock counts:** start them (`inventory.open_count`); you can't post them.
+3. **Adjustments and transfers:** prepare and send; someone else approves or counts in.
+4. **Stock reports:** `inventory.on_hand`, `inventory.stock_card`, `stock_sales.sales_report`, `stock_sales.movers`, `stock_sales.shrinkage`.

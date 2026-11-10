@@ -5,11 +5,14 @@ Rules:
   Quantities are in each product's stock unit (inventory.unit). Stock comes off the books the day it's recorded (inventory.MOVES reads it).
 - Each line keeps what one unit sold for (typed, from the file, or else the catalog selling price) and what it cost then (the last purchase
   cost), so sales amounts and gross profit never change when prices do later.
-- Customer returns go back to stock for sale, or to damaged stock.
-- A sale can't be dated before a stock count that has started at that place: the count already took in what was sold up to then.
-  Nor can it be dated in the future.
+- Customer returns go back to stock for sale, or to damaged stock. A return with no price typed is valued at what the product last sold
+  for at that place, so it takes back what was taken in.
+- Papers that could hide missing stock wait for management (ADMIN or APPROVER, never the person who recorded them) before they touch the
+  books: a sale line below half the catalog price (or at nothing), and any customer return to stock for sale. The rest go straight through.
+- A sale can't be dated before a stock count that has started at that place and covers the product: the count already took in what was
+  sold up to then. Nor can it be dated in the future. For the same reason, sales a later count has taken in can't be cancelled.
 - The same POS file can't be imported twice for the same place.
-- Recorded sales are permanent. Management cancels a wrong paper with a reason, and it is recorded again.
+- Recorded sales are permanent. Management cancels a wrong paper with a reason, and it is recorded again. Nobody cancels their own.
 - Branch staff record their own branch only and never see costs or profit.
 """
 from __future__ import annotations
@@ -28,6 +31,7 @@ from .money import fmt_peso, parse_pesos
 
 SALE, RETURN = "SALE", "RETURN"
 POSTED, CANCELLED = "POSTED", "CANCELLED"
+WAITING, REJECTED = "WAITING", "REJECTED"  # a held paper's state, from sale_holds
 KIND_LABELS = {SALE: "Sales", RETURN: "Customer return"}
 SOURCE_LABELS = {"ENTRY": "Typed in", "IMPORT": "POS file"}
 PREFIX = {SALE: "SL", RETURN: "RT"}
@@ -56,19 +60,48 @@ def _cost_c(product) -> int | None:
     return None if cost is None else _round(cost)
 
 
-def _check_date(conn, location: int, day: str) -> str:
+def _clean_date(day: str) -> str:
     try:
         when = date.fromisoformat(str(day))
     except (TypeError, ValueError):
         raise POError("Choose the day of the sales.") from None
     if when > today():
         raise POError("Sales can't be recorded for a day that hasn't come yet.")
-    count = conn.execute("SELECT count_number, substr(opened_at, 1, 10) AS day FROM stock_counts WHERE location_code = ? AND status <> 'CANCELLED'"
-                         " AND substr(opened_at, 1, 10) > ? ORDER BY opened_at LIMIT 1", (location, when.isoformat())).fetchone()
+    return when.isoformat()
+
+
+def _later_count(conn, location: int, after: str, product_ids) -> dict | None:
+    """A stock count at this place, not cancelled, started after `after` (a day or a moment), that covers any of these products."""
+    depts = {r[0] for r in conn.execute(f"SELECT DISTINCT department_id FROM products WHERE id IN ({','.join('?' * len(product_ids))})", list(product_ids))} if product_ids else set()
+    for c in conn.execute("SELECT count_number, department_id, substr(opened_at, 1, 10) AS day FROM stock_counts WHERE location_code = ? AND status <> 'CANCELLED'"
+                          " AND opened_at > ? ORDER BY opened_at", (location, after)):
+        if c["department_id"] is None or c["department_id"] in depts:
+            return dict(c)
+    return None
+
+
+def _check_date(conn, location: int, day: str, product_ids) -> None:
+    count = _later_count(conn, location, day + " 99", product_ids)
     if count:
         raise POError(f"Stock count {count['count_number']} at {inv.place_name(conn, location)} started on {count['day']}, so it already took in "
                       f"what was sold before then. Record sales from that day on.")
-    return when.isoformat()
+
+
+def _held_back(kind: str, lines: dict[int, tuple], products: dict) -> str:
+    """Why a paper must wait for management, or '' when it goes straight through."""
+    if kind == RETURN:
+        return "Customer return to stock for sale" if any(r[0] == inv.GOOD for r in lines.values()) else ""
+    for pid, (_bucket, _qty, price, _amount, _cost) in lines.items():
+        listed = list_price_c(products[pid])
+        if price == 0 or (listed and price * 2 < listed):
+            return f"{products[pid]['item_code']} sold below half its catalog price"
+    return ""
+
+
+def _last_price_c(conn, location: int, product_id: int) -> int | None:
+    row = conn.execute("SELECT l.price_c FROM stock_sale_lines l JOIN stock_sales s ON s.id = l.sale_id WHERE s.kind = 'SALE' AND s.status = 'POSTED'"
+                       " AND s.location_code = ? AND l.product_id = ? ORDER BY s.sale_date DESC, s.id DESC LIMIT 1", (location, product_id)).fetchone()
+    return row[0] if row else None
 
 
 def _number(conn, kind: str) -> str:
@@ -86,13 +119,16 @@ def record(conn, user: User, location: int, day: str, lines: list[dict], kind: s
         raise POError("Choose sales or a customer return.")
     with tx(conn):
         inv._check_place(conn, user, location)
-        day = _check_date(conn, location, day)
-        if file_sha256 and conn.execute("SELECT sale_number FROM stock_sales WHERE file_sha256 = ? AND location_code = ? AND status = 'POSTED'",
+        day = _clean_date(day)
+        if file_sha256 and conn.execute("SELECT s.sale_number FROM stock_sales s WHERE s.file_sha256 = ? AND s.location_code = ? AND s.status = 'POSTED'"
+                                        " AND NOT EXISTS (SELECT 1 FROM sale_holds h WHERE h.sale_id = s.id AND h.decision = 'REJECTED')",
                                         (file_sha256, location)).fetchone():
             raise POError(f"That file was already imported for {inv.place_name(conn, location)}.")
         rows: dict[int, tuple] = {}
+        products: dict[int, object] = {}
         for line in lines:
             p = inv._product(conn, line["product_id"])
+            products[p["id"]] = p
             qty = inv._qty(line.get("qty", ""), p)
             if not qty:
                 continue
@@ -107,7 +143,13 @@ def record(conn, user: User, location: int, day: str, lines: list[dict], kind: s
                     amount = parse_pesos(amount_text)
                     price = _round(Decimal(amount) * 1000 / qty)
                 else:
-                    price = parse_pesos(price_text) if price_text else list_price_c(p)
+                    if price_text:
+                        price = parse_pesos(price_text)
+                    elif kind == RETURN:
+                        last = _last_price_c(conn, location, p["id"])
+                        price = list_price_c(p) if last is None else last
+                    else:
+                        price = list_price_c(p)
                     amount = _round(Decimal(price) * qty / 1000)
             except ValueError:
                 raise POError(f"{p['item_code']}: the price must be an amount in pesos.") from None
@@ -116,16 +158,56 @@ def record(conn, user: User, location: int, day: str, lines: list[dict], kind: s
             rows[p["id"]] = (bucket, qty, price, amount, _cost_c(p))
         if not rows:
             raise POError("Type a quantity for at least one product.")
+        _check_date(conn, location, day, rows)
         number = _number(conn, kind)
         sale_id = conn.execute("INSERT INTO stock_sales(sale_number, kind, location_code, sale_date, source, file_name, file_sha256, note, status, entered_by, entered_at)"
                                " VALUES (?,?,?,?,?,?,?,?,?,?,?)", (number, kind, location, day, source, file_name, file_sha256, (note or "").strip(), POSTED, user.id, timestamp())).lastrowid
+        hold = _held_back(kind, rows, products)
+        if hold:
+            conn.execute("INSERT INTO sale_holds(sale_id, reason) VALUES (?, ?)", (sale_id, hold))
         conn.executemany("INSERT INTO stock_sale_lines(sale_id, product_id, bucket, qty_m, price_c, amount_c, cost_c) VALUES (?,?,?,?,?,?,?)",
                          [(sale_id, pid, *r) for pid, r in rows.items()])
         total = sum(r[3] for r in rows.values())
         audit(conn, user, "SALES_RECORD" if kind == SALE else "SALES_RETURN", "stock_sale", sale_id,
               summary=f"{number}: {KIND_LABELS[kind].lower()} at {inv.place_name(conn, location)} on {day}, {len(rows)} products, {fmt_peso(total)}"
-              + (f", from {file_name}" if file_name else ""))
+              + (f", from {file_name}" if file_name else "") + (f". Waiting for approval: {hold}" if hold else ""))
     return sale_id
+
+
+def is_waiting(conn, sale_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM sale_holds WHERE sale_id = ? AND decision IS NULL", (sale_id,)).fetchone() is not None
+
+
+def decide(conn, user: User, sale_id: int, approve: bool, note: str = "") -> None:
+    """Management decides a paper that is waiting. Approving puts it on the books; rejecting needs a reason and keeps it off for good."""
+    require(user, "stock.post")
+    note = (note or "").strip()
+    if not approve and not note:
+        raise POError("Give a reason for rejecting it.")
+    with tx(conn):
+        sale = _sale(conn, sale_id)
+        inv._check_place(conn, user, sale["location_code"])
+        hold = conn.execute("SELECT * FROM sale_holds WHERE sale_id = ?", (sale_id,)).fetchone()
+        if hold is None or hold["decision"] is not None or sale["status"] != POSTED:
+            raise POError("These sales aren't waiting for approval.")
+        if sale["entered_by"] == user.id:
+            raise POError("You recorded these, so someone else approves them.")
+        if approve:
+            _check_date(conn, sale["location_code"], sale["sale_date"], [r[0] for r in conn.execute("SELECT product_id FROM stock_sale_lines WHERE sale_id = ?", (sale_id,))])
+        conn.execute("UPDATE sale_holds SET decision = ?, decided_by = ?, decided_at = ?, decision_note = ? WHERE sale_id = ?",
+                     ("APPROVED" if approve else "REJECTED", user.id, timestamp(), note, sale_id))
+        audit(conn, user, "SALES_APPROVE" if approve else "SALES_REJECT", "stock_sale", sale_id,
+              summary=f"{sale['sale_number']} {'approved' if approve else 'rejected'}" + (f": {note}" if note else ""))
+
+
+def waiting(conn, user: User) -> int:
+    """How many papers wait for this person's approval."""
+    if not user.can("stock.post"):
+        return 0
+    places = inv.scope(user)
+    return sum(1 for r in conn.execute("SELECT s.location_code, s.entered_by FROM stock_sales s JOIN sale_holds h ON h.sale_id = s.id"
+                                       " WHERE h.decision IS NULL AND s.status = 'POSTED'")
+               if (places is None or r[0] in places) and r[1] != user.id)
 
 
 def read_file(conn, data: bytes) -> dict:
@@ -210,8 +292,19 @@ def cancel(conn, user: User, sale_id: int, reason: str) -> None:
         raise POError("Give a reason for cancelling.")
     with tx(conn):
         sale = _sale(conn, sale_id)
+        inv._check_place(conn, user, sale["location_code"])
         if sale["status"] != POSTED:
             raise POError("These sales are already cancelled.")
+        hold = conn.execute("SELECT decision FROM sale_holds WHERE sale_id = ?", (sale_id,)).fetchone()
+        if hold is not None and hold[0] != "APPROVED":
+            raise POError("These sales never reached the books. Reject them instead." if hold[0] is None else "These sales were rejected, so they never reached the books.")
+        if sale["entered_by"] == user.id:
+            raise POError("You recorded these, so someone else cancels them.")
+        moment = min(sale["sale_date"] + " 23:59:59", sale["entered_at"])
+        count = _later_count(conn, sale["location_code"], moment, [r[0] for r in conn.execute("SELECT product_id FROM stock_sale_lines WHERE sale_id = ?", (sale_id,))])
+        if count:
+            raise POError(f"Stock count {count['count_number']} has started at {inv.place_name(conn, sale['location_code'])} since, and it already took these "
+                          "sales in. Put the books right with an adjustment instead.")
         conn.execute("UPDATE stock_sales SET status = ?, cancelled_by = ?, cancelled_at = ?, cancel_reason = ? WHERE id = ?", (CANCELLED, user.id, timestamp(), reason, sale_id))
         audit(conn, user, "SALES_CANCEL", "stock_sale", sale_id, summary=f"{sale['sale_number']} cancelled: {reason}")
 
@@ -235,11 +328,20 @@ def papers(conn, user: User, status: str | None = None, location: int | None = N
             args.append(value)
     rows = conn.execute("SELECT s.*, u.full_name AS entered_name, c.full_name AS cancelled_name,"
                         " (SELECT COUNT(*) FROM stock_sale_lines l WHERE l.sale_id = s.id) AS lines,"
-                        " (SELECT COALESCE(SUM(amount_c), 0) FROM stock_sale_lines l WHERE l.sale_id = s.id) AS total_c"
+                        " (SELECT COALESCE(SUM(amount_c), 0) FROM stock_sale_lines l WHERE l.sale_id = s.id) AS total_c,"
+                        " h.reason AS hold_reason, h.decision AS hold_decision, h.decision_note AS hold_note, h.decided_at AS hold_decided_at, d.full_name AS hold_decided_name"
                         " FROM stock_sales s JOIN users u ON u.id = s.entered_by LEFT JOIN users c ON c.id = s.cancelled_by"
+                        " LEFT JOIN sale_holds h ON h.sale_id = s.id LEFT JOIN users d ON d.id = h.decided_by"
                         + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY s.sale_date DESC, s.id DESC", args).fetchall()
-    return [{**dict(r), "location_name": inv.place_name(conn, r["location_code"]), "kind_label": KIND_LABELS[r["kind"]], "source_label": SOURCE_LABELS[r["source"]]}
-            for r in rows if places is None or r["location_code"] in places]
+    out = []
+    for r in rows:
+        if places is not None and r["location_code"] not in places:
+            continue
+        state = (CANCELLED if r["status"] == CANCELLED else WAITING if r["hold_reason"] is not None and r["hold_decision"] is None
+                 else REJECTED if r["hold_decision"] == "REJECTED" else POSTED)
+        out.append({**dict(r), "location_name": inv.place_name(conn, r["location_code"]), "kind_label": KIND_LABELS[r["kind"]],
+                    "source_label": SOURCE_LABELS[r["source"]], "state": state, "on_books": state == POSTED})
+    return out
 
 
 def paper_lines(conn, user: User, sale_id: int) -> list[dict]:
@@ -264,14 +366,24 @@ def paper_lines(conn, user: User, sale_id: int) -> list[dict]:
 
 def _sold(conn, date_from: str, date_to: str, location: int | None = None) -> list:
     """Net sales per place and product between two days: sold less returned, with amounts and cost."""
-    where = "s.status = 'POSTED' AND s.sale_date BETWEEN ? AND ?" + (" AND s.location_code = ?" if location is not None else "")
+    where = (f"s.status = 'POSTED' AND {inv._NOT_HELD_BACK} AND s.sale_date BETWEEN ? AND ?" + (" AND s.location_code = ?" if location is not None else ""))
     args = [date_from, date_to] + ([location] if location is not None else [])
-    return conn.execute("SELECT s.location_code, l.product_id,"
-                        " SUM(CASE s.kind WHEN 'SALE' THEN l.qty_m ELSE -l.qty_m END) AS qty_m,"
-                        " SUM(CASE s.kind WHEN 'SALE' THEN l.amount_c ELSE -l.amount_c END) AS amount_c,"
-                        " SUM(CASE s.kind WHEN 'SALE' THEN 1 ELSE -1 END * COALESCE(l.cost_c, 0) * l.qty_m / 1000.0) AS cost_c,"
-                        " SUM(l.cost_c IS NULL) AS no_cost, MAX(CASE s.kind WHEN 'SALE' THEN s.sale_date END) AS last_sold"
-                        f" FROM stock_sales s JOIN stock_sale_lines l ON l.sale_id = s.id WHERE {where} GROUP BY s.location_code, l.product_id", args).fetchall()
+    out: dict[tuple[int, int], dict] = {}
+    for r in conn.execute(f"SELECT s.location_code, s.kind, s.sale_date, l.product_id, l.qty_m, l.amount_c, l.cost_c FROM stock_sales s JOIN stock_sale_lines l ON l.sale_id = s.id WHERE {where}", args):
+        o = out.setdefault((r["location_code"], r["product_id"]), {"location_code": r["location_code"], "product_id": r["product_id"], "qty_m": 0, "amount_c": 0,
+                                                                   "cost": Decimal(0), "no_cost": 0, "last_sold": None})
+        sign = 1 if r["kind"] == SALE else -1
+        o["qty_m"] += sign * r["qty_m"]
+        o["amount_c"] += sign * r["amount_c"]
+        if r["cost_c"] is None:
+            o["no_cost"] += 1
+        else:
+            o["cost"] += sign * Decimal(r["cost_c"]) * r["qty_m"] / 1000
+        if r["kind"] == SALE and (o["last_sold"] is None or r["sale_date"] > o["last_sold"]):
+            o["last_sold"] = r["sale_date"]
+    for o in out.values():
+        o["cost_c"] = _round(o.pop("cost"))
+    return list(out.values())
 
 
 def sales_report(conn, user: User, date_from: str, date_to: str, location: int | None = None, by: str = "product") -> list[dict]:
@@ -287,11 +399,15 @@ def sales_report(conn, user: User, date_from: str, date_to: str, location: int |
                                  "qty_m": 0, "amount_c": 0, "cost_c": 0, "no_cost": 0})
         o["qty_m"] += r["qty_m"]
         o["amount_c"] += r["amount_c"]
-        o["cost_c"] += _round(Decimal(str(r["cost_c"] or 0)))
+        o["cost_c"] += r["cost_c"]
         o["no_cost"] += r["no_cost"]
     for o in out.values():
-        o["profit_c"] = o["amount_c"] - o["cost_c"]
-        o["margin_bp"] = _round(Decimal(o["profit_c"]) * 10000 / o["amount_c"]) if o["amount_c"] else None
+        # Without a cost for every line, profit and margin would be overstated, so they're left blank and out of the totals.
+        if o["no_cost"]:
+            o["cost_c"] = o["profit_c"] = o["margin_bp"] = None
+        else:
+            o["profit_c"] = o["amount_c"] - o["cost_c"]
+            o["margin_bp"] = _round(Decimal(o["profit_c"]) * 10000 / o["amount_c"]) if o["amount_c"] else None
     return sorted(out.values(), key=lambda o: -o["amount_c"])
 
 
@@ -319,6 +435,9 @@ def movers(conn, user: User, location: int | None = None) -> list[dict]:
     last = {(r["location_code"], r["product_id"]): r["last_sold"] for r in _sold(conn, "0000-01-01", end.isoformat(), location)}
     stock = {(r["location"], r["product_id"]): r for r in inv.on_hand(conn, user, location)}
     products = {r["id"]: r for r in conn.execute("SELECT * FROM products")}
+    # When good stock first arrived at each place: a product that has never sold is idle from then, not for ever.
+    first_in = {(r[0], r[1]): r[2] for r in conn.execute(inv._moves_sql("bucket = 'GOOD' AND qty_m > 0 AND product_id IS NOT NULL", "location, product_id, MIN(moved_at)")
+                                                         + " GROUP BY location, product_id", inv._params(conn))}
     out = []
     for key in set(sold) | set(stock):
         loc, pid = key
@@ -327,7 +446,8 @@ def movers(conn, user: User, location: int | None = None) -> list[dict]:
         per_day = Decimal(max(qty, 0)) / days
         good = stock[key]["good_m"] if key in stock else 0
         last_day = last.get(key)
-        idle = (end - date.fromisoformat(last_day)).days if last_day else None
+        since = last_day or (first_in.get(key) or "")[:10]
+        idle = (end - date.fromisoformat(since)).days if since else None
         out.append({"location": loc, "location_name": inv.place_name(conn, loc), "product_id": pid, "item_code": p["item_code"], "description": p["description"],
                     "unit": inv.unit(p), "sold_m": qty, "per_day_m": _round(per_day), "good_m": good, "value_c": inv.value_c(good, p),
                     "days_left": int(good / per_day) if per_day > 0 and good > 0 else None, "last_sold": last_day,
@@ -335,31 +455,42 @@ def movers(conn, user: User, location: int | None = None) -> list[dict]:
     return sorted(out, key=lambda o: (-o["sold_m"], o["item_code"]))
 
 
-def shrinkage(conn, user: User, date_from: str, date_to: str) -> list[dict]:
-    """What posted stock counts found missing or over the books, per place and product, valued at the last purchase cost."""
+def shrinkage(conn, user: User, date_from: str, date_to: str, location: int | None = None) -> list[dict]:
+    """What went missing, per place, product and how: found missing or over by posted stock counts, and lost on transfers (sent but not
+    counted in at the other end, shown at the place it was going to). Valued at the last purchase cost."""
     require(user, "inventory.view")
     products = {r["id"]: r for r in conn.execute("SELECT * FROM products")}
-    out = []
-    for r in conn.execute("SELECT m.location_code, m.product_id, SUM(CASE WHEN m.qty_m < 0 THEN -m.qty_m ELSE 0 END) AS missing_m,"
-                          " SUM(CASE WHEN m.qty_m > 0 THEN m.qty_m ELSE 0 END) AS over_m, COUNT(*) AS counts"
-                          " FROM stock_movements m WHERE m.kind = 'COUNT' AND substr(m.moved_at, 1, 10) BETWEEN ? AND ? GROUP BY m.location_code, m.product_id",
-                          (date_from, date_to)):
-        p = products[r["product_id"]]
-        out.append({"location": r["location_code"], "location_name": inv.place_name(conn, r["location_code"]), "item_code": p["item_code"],
-                    "description": p["description"], "unit": inv.unit(p), "missing_m": r["missing_m"], "over_m": r["over_m"],
-                    "missing_c": inv.value_c(r["missing_m"], p), "over_c": inv.value_c(r["over_m"], p), "counts": r["counts"]})
+    found = conn.execute("SELECT 'COUNT' AS how, m.location_code, m.product_id, SUM(CASE WHEN m.qty_m < 0 THEN -m.qty_m ELSE 0 END) AS missing_m,"
+                         " SUM(CASE WHEN m.qty_m > 0 THEN m.qty_m ELSE 0 END) AS over_m"
+                         " FROM stock_movements m WHERE m.kind = 'COUNT' AND substr(m.moved_at, 1, 10) BETWEEN ? AND ? GROUP BY m.location_code, m.product_id"
+                         " UNION ALL"
+                         " SELECT 'TRANSFER', t.to_code, l.product_id, SUM(MAX(l.sent_m - l.received_m, 0)), SUM(MAX(l.received_m - l.sent_m, 0))"
+                         " FROM stock_transfers t JOIN stock_transfer_lines l ON l.transfer_id = t.id"
+                         " WHERE t.status = 'RECEIVED' AND l.received_m <> l.sent_m AND substr(t.closed_at, 1, 10) BETWEEN ? AND ? GROUP BY t.to_code, l.product_id",
+                         (date_from, date_to, date_from, date_to)).fetchall()
     places = inv.scope(user)
-    return sorted([o for o in out if places is None or o["location"] in places], key=lambda o: -o["missing_c"])
+    out = []
+    for r in found:
+        if (places is not None and r["location_code"] not in places) or (location is not None and r["location_code"] != location):
+            continue
+        p = products[r["product_id"]]
+        out.append({"location": r["location_code"], "location_name": inv.place_name(conn, r["location_code"]), "how": r["how"],
+                    "how_label": "Stock count" if r["how"] == "COUNT" else "Lost on transfer", "item_code": p["item_code"],
+                    "description": p["description"], "unit": inv.unit(p), "missing_m": r["missing_m"], "over_m": r["over_m"],
+                    "missing_c": inv.value_c(r["missing_m"], p), "over_c": inv.value_c(r["over_m"], p)})
+    return sorted(out, key=lambda o: -o["missing_c"])
 
 
 def value_by_department(conn, user: User, location: int | None = None) -> list[dict]:
     """Stock value per department at the last purchase cost: for sale, and damaged or held."""
     out: dict[str, dict] = {}
     for r in inv.on_hand(conn, user, location):
-        o = out.setdefault(r["department"], {"department": r["department"], "products": 0, "good_value_c": 0, "other_value_c": 0})
-        o["products"] += 1
+        o = out.setdefault(r["department"], {"department": r["department"], "ids": set(), "good_value_c": 0, "other_value_c": 0})
+        o["ids"].add(r["product_id"])
         o["good_value_c"] += r["good_value_c"]
         o["other_value_c"] += r["value_c"] - r["good_value_c"]
+    for o in out.values():
+        o["products"] = len(o.pop("ids"))
     return sorted(out.values(), key=lambda o: -o["good_value_c"])
 
 

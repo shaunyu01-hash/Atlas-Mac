@@ -53,7 +53,7 @@ Permissions (`auth.PERMISSIONS`):
 | `stock.post` | ADMIN, APPROVER | Post counts, approve or reject adjustments, cancel transfers |
 | `adjust.prepare` | ADMIN, BUYER, RECEIVER, WAREHOUSE | Prepare adjustments |
 | `transfer.send` | ADMIN, BUYER, RECEIVER, WAREHOUSE | Send stock |
-| `transfer.receive` | ADMIN, RECEIVER, WAREHOUSE | Count in a transfer |
+| `transfer.receive` | RECEIVER, WAREHOUSE (since V31) | Count in a transfer |
 
 1. **Place scope** (`scope`): a receiver works at their branch only; a WAREHOUSE-only login works at location 0 only; everyone else works everywhere. Refusals read "That isn't your branch."
 2. **Receivers and the warehouse never see the books or costs.** `count_sheet` returns products only; `my_figures` returns only the caller's figures; `transfer_lines` hides `sent_m` from the receiving end while SENT; `adjustment_lines` and `count_results` drop values without `inventory.view`.
@@ -151,3 +151,61 @@ Audit actions: `SALES_RECORD`, `SALES_RETURN`, `SALES_CANCEL`, `REORDER_LEVELS`,
 - The rule against selling before a count's start day is what stops double counting. Keep it if dates or counts change.
 - `reorder.levels` reads `inventory.on_hand`, which needs `inventory.view`, so the Reorder page is office only.
 - `SalesReportsWidget` hands its tab pages to `InventoryReportsPage`. It stays alive as `InventoryReportsPage.sales` to refresh them.
+
+# Review fixes (V31)
+
+Phases 1 and 2 were reviewed before merging (access, receiving, ordering, screens). These rules replace the older text above where they differ.
+
+## Owner's decisions
+
+- **Unusual sales wait for management.** A sale line priced below half the catalog price (or at nothing), and any customer return to stock for sale, gets a `sale_holds` row and stays off the books until ADMIN or APPROVER (`stock.post`), never the person who recorded it, approves it (`stock_sales.decide`). A rejected paper never counts. Damaged returns and normal sales go straight through. `stock_sales.waiting` feeds the Sales badge in the sidebar.
+- **The catalog cost follows approved orders.** `masters.record_products` now sets `products.last_cost_c` to each approved OF line's `unit_cost_c` (converted to the product's own pieces per unit) for existing products too, audited as `PRODUCT_COST_CHANGE`. Past sales keep their cost snapshot.
+- **Transfer losses are missing stock, and only the place counts a transfer in.** `transfer.receive` is RECEIVER and WAREHOUSE only. `receive_transfer` also refuses anyone whose `scope` is every place. `stock_sales.shrinkage` lists shortages on received transfers ("Lost on transfer", at the place it was going to) beside count differences, and takes a place.
+
+## Stock
+
+- **`inventory.live_since` is judged per movement.** Each purchasing row in `MOVES` is kept when its own date is on or after the setting. Goods leaving damaged or held stock are kept only when they entered it on or after the setting (`_CS_DAMAGED_FROM`, `_first_received`). The old `live_po` filter, which dropped a whole PO for ever, is gone.
+- **Counts post against the books when each product was counted** (`_books_when_counted`): every GOOD movement at the place with `moved_at` up to that product's latest count entry in its final round, read at post time. So a sale typed in before the counters reached it, or a receiving round that comes into force later but is dated earlier, isn't counted twice. `count_results` shows that figure as "Books when counted"; for a posted count it is `agreed − COUNT movement`. `book_m` is still the snapshot at start (`start_m` in results).
+- **Counts and transfers wait for each other.** `open_count` refuses while a transfer to that place is SENT. `receive_transfer` refuses while that place has a COUNTING or AGREED count.
+- **Claim stub cancelled after it reached the warehouse:** its pieces move from HELD to DAMAGED at the warehouse at `closed_at` (kind `CS_CANCELLED`), so an adjustment can write them off.
+- **Damaged pieces on an extra line** (not on the PO, negative id) leave the branch's DAMAGED stock when the item pass is printed (`_IP_DAMAGED`), not its good stock.
+- **`scope` fails closed:** a RECEIVER with no branch gets `set()` (no place); any WAREHOUSE login without a branch gets the warehouse.
+- **Pieces per unit is fixed once a product has stock** (`masters._has_stock`: received on a PO or on any inventory paper). Changing it would change what every counted piece means. Add a new product instead.
+
+## Sales
+
+- `_check_date` blocks earlier-dated sales only for counts that cover the paper's products (a department count blocks only that department).
+- `cancel` refuses the person who recorded the paper, papers that are waiting or rejected, and papers a later count (opened after the sale's moment) has taken in. Put those right with an adjustment.
+- A return with no price typed is valued at the product's latest sale price at that place, else the catalog price.
+- Reports: totals are worked in Python with `Decimal`. A row with any line without a cost shows no cost, profit or margin, and is left out of the gross profit total (the screen says how many). "Not moving" counts idle days from the first good stock in at that place when the product never sold. By department counts each product once.
+
+## Reorder
+
+- `on_order` adds branch quantities on OFs not yet turned into POs (DRAFT, PENDING_APPROVAL, APPROVED with no `pos_generated_at`), and subtracts pieces already charged on ISSUED shortage debit memos.
+- A row is orderable only with an active supplier, a cost and an active product; `why_not` says which is missing, and `make_orders` names it.
+- Draft lines carry the product's `box_size` and `selling_c`.
+
+## Data model (V31)
+
+- `sale_holds(sale_id, reason, decision, decided_by, decided_at, decision_note)`: inserted only before the paper has lines, decided once, never by the recorder, never deleted.
+- Lock triggers: decided adjustments, finished transfers, posted or cancelled counts and cancelled sales can't have any column changed. A `stock_movements` row must come from an APPROVED adjustment, an AGREED count or a SENT transfer (`stock_movements_from_a_paper`).
+- Audit actions: `SALES_APPROVE`, `SALES_REJECT`.
+
+## Screens
+
+- `_Dialog`: Enter alone never saves (it adds a product or finishes a cell); Ctrl+Enter saves. Esc or Cancel asks before throwing away typed figures or lines.
+- Opening an OF or PO from Inventory (Ctrl+Shift+N, say) switches the sidebar back to Purchasing; clicking the highlighted Inventory entry reopens its page.
+- Sales has a "Waiting for approval" tab with Approve and Reject, and "Cancelled or rejected". Nobody sees Cancel, Approve or Reject on their own paper.
+- Reorder keeps what was typed in Order (units) across refreshes. Only people with `of.edit` can type there. Without a selection of two or more rows, it orders every orderable low row plus any row with an amount typed, and the question lists every line.
+- Inventory reports: the Sales, Fast and slow, Missing stock and By department tabs share one filter row above the tabs, showing only the filters each tab uses. Missing stock has a How column.
+- Double-click opens a count to count, or a transfer to count in. Column widths fit 1366 wide. The switch is 24 px high so its letters aren't clipped.
+
+## Known, not changed here
+
+- A late claim stub can charge the supplier for pieces that already went back on an item pass (`claim_stubs.py`, room = received − damaged − late). This is a purchasing rule, so it is left for a purchasing change.
+- Counting during selling hours is still a matter of practice: sales typed in after a product was counted are taken as made after the count. The start dialog says so.
+- A product added as found shows on the second counter's sheet in the same round.
+
+## Tests
+
+`tests/test_inventory_review.py` (23 tests), one per fix.

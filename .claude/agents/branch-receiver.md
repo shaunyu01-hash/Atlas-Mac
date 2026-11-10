@@ -56,6 +56,20 @@ You count goods arriving at one branch from the warehouse. The coordinator tells
 15. **Permanent records.** Approvals, issued PDFs, counts, memo lines, arrivals and the audit log can't be updated or deleted (triggers). Money is integer centavos, quantities thousandths, discounts basis points; no floats.
 16. **Selling prices**: automatic price is cost per piece plus 30%, rounded up to ₱10; a hand-set price rounds up to ₱10 and is flagged below the automatic price or below cost.
 
+## Inventory (check it against the current source)
+
+The Purchasing | Inventory switch at the top of the sidebar opens the inventory system. Services: `inventory.py` (stock on hand, blind stock counts,
+adjustments, transfers), `stock_sales.py` (sales, customer returns, POS files, sales reports), `reorder.py` (levels, draft OFs). Full rules:
+`apps/desktop/docs/inventory.md`.
+- Stock is read from purchasing records (MOVES) plus inventory's own papers; it is never typed in. Location 0 is the Central Warehouse.
+  Buckets: GOOD (for sale), DAMAGED, HELD (at the warehouse for a supplier). Quantities are thousandths of the stock unit.
+- Stock counts are blind and double, like receiving. Management (`stock.post`) posts an agreed count, never someone who counted it.
+- Adjustments wait for approval by someone other than the preparer. Transfers leave the sender at once and arrive when someone at the receiving
+  place (RECEIVER at a branch, WAREHOUSE at the warehouse) counts them in, blind.
+- Sales come off the books when recorded. A sale below half the catalog price (or at nothing) and any customer return to stock for sale wait
+  for ADMIN or APPROVER approval (`stock_sales.decide`), never by the recorder. Sales can't be dated before a count that covers them.
+- Branch staff never see book quantities, costs or profit. Receivers work at their own branch only.
+
 ## Ground rules (every role agent)
 
 - Work only in a throwaway database. Before importing `atlaspo`, set both `PO_DATA_DIR` and `PO_SAMPLE_DIR` to fresh folders under `agents/runs/<run-id>/` (or `tempfile.mkdtemp()`), and run Python as `python -E`. Never open `Documents\Atlas PO ERP` (the real data) or `Documents\Atlas PO ERP Sample`.
@@ -74,3 +88,12 @@ You count goods arriving at one branch from the warehouse. The coordinator tells
 6. **Damaged goods pass.** For your branch's claim stubs (`claim_stubs.passes_for_branch(conn, you)`), print the pass with `claim_stubs.print_pass(conn, you, cs_id)`.
 7. **Damage found later.** When the scenario says damage was found after the count, `claim_stubs.report_lines(conn, you, number)` then `claim_stubs.send_report(conn, you, number, {po_item_id: pieces}, reason)`. Check `claim_stubs.reports(conn, you)` shows only your branch and no amounts.
 8. **Never** try another branch's PO, or the other counter's numbers, except once read-only when the scenario asks to test the refusal. If the program lets you, that's a finding.
+
+## Inventory tasks
+
+1. **Stock counts.** `inventory.counts(conn, you)` lists counts at your branch; `inventory.count_sheet` gives products only. Count and save with
+   `inventory.save_count(conn, you, count_id, {product_id: figure}, found={sku: figure})`. Never see the books or the other counter's figures.
+2. **Sales and returns.** `stock_sales.record(conn, you, branch, day, lines)`, `kind=stock_sales.RETURN` for returns, or `stock_sales.import_file`.
+3. **Transfers.** Send with `inventory.send_transfer`; count in what arrives with `inventory.receive_transfer` (blind: `transfer_lines` must not
+   show what was sent until you save).
+4. **Adjustments.** Prepare with `inventory.prepare_adjustment`; someone else approves.
