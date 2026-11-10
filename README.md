@@ -19,7 +19,7 @@ Inventory is the next module (see [Next up](#next-up)).
 
 ```
 git clone https://github.com/shaunyu01-hash/Atlas-PO-ERP.git
-cd Atlas-PO-ERP\po_app
+cd Atlas-PO-ERP\apps\desktop
 pip install -r requirements.txt
 python -E "Atlas PO ERP (Sample Data).pyw"
 ```
@@ -30,7 +30,7 @@ It runs on Python 3.14 and 64-bit Windows.
 
 The sample data lives in `Documents\Atlas PO ERP Sample`. Delete that folder to start fresh; it rebuilds itself the next time it opens.
 
-| To do this | Run this in `po_app` |
+| To do this | Run this in `apps/desktop` |
 |---|---|
 | Open the sample program | `python -E "Atlas PO ERP (Sample Data).pyw"` |
 | Open the real program | `python -E "Atlas PO ERP.pyw"` |
@@ -48,16 +48,58 @@ The real database is `Documents\Atlas PO ERP\po.sqlite`. Set `PO_DATA_DIR` to pu
 
 ## How to use it
 
-The full guide (every screen, the rules the system enforces, roles, backups and a code map) is in [po_app/README.md](po_app/README.md).
+The full guide (every screen, the rules the system enforces, roles, backups and a code map) is in [apps/desktop/README.md](apps/desktop/README.md).
 
 ## Next up
 
 **Inventory, Phase 1:** stock on hand per branch and at the warehouse. It builds on the deliveries the program already records, and adds stock counts and approved adjustments.
 
+**Web app and API (in progress):** a TypeScript API and a browser app on Supabase, alongside the desktop program. So far they cover sign-in, suppliers, and custom fields that admins can add without code changes. That custom-field groundwork is what later AI features (fields, forms and processes made from a prompt) will build on.
+
+## Web app and API
+
+Needs Node 22+, pnpm and a Supabase project (Singapore region).
+
+```
+pnpm install
+copy apps\api\.env.example apps\api\.env          (fill in from Supabase)
+copy apps\web\.env.example apps\web\.env.local    (fill in from Supabase)
+pnpm db:migrate
+pnpm dev
+```
+
+The web app runs on http://localhost:5173 and the API on http://localhost:8787. The API's contract is at http://localhost:8787/openapi.json.
+
+To sign in, create the user under Supabase Authentication, then give them an Atlas profile in the SQL editor:
+
+```sql
+insert into app_users (id, display_name, role)
+select id, 'Owner', 'owner' from auth.users where email = 'you@example.com';
+```
+
+| To do this | Run this at the repository root |
+|---|---|
+| Start the API and web app | `pnpm dev` |
+| Type-check everything | `pnpm typecheck` |
+| Run the tests | `pnpm test` |
+| Lint and format | `pnpm lint` / `pnpm format` |
+| Make a migration after editing `packages/db/src/schema.ts` | `pnpm db:generate` |
+| Apply migrations to Supabase | `pnpm db:migrate` |
+
+**Ground rules:**
+- Money is whole centavos everywhere, never a float.
+- Every rule lives in `packages/domain` and is shared by the API and the web app.
+- The browser never reads Supabase tables directly. Every table has Row-Level Security on with no policies, and all data goes through the API.
+
 ## Repository
 
 | Path | What it is |
 |---|---|
-| `po_app/` | The program: `atlaspo/` (code), `tests/`, launchers and `Build EXE.cmd` |
+| `apps/desktop/` | The desktop program (Python, PySide6, SQLite): `atlaspo/` (code), `tests/`, launchers and `Build EXE.cmd` |
+| `apps/api/` | The API (Hono, OpenAPI). `src/index.ts` is the serverless entry and `src/server.ts` runs it locally |
+| `apps/web/` | The browser app (React, Vite, TanStack Router and Query, Tailwind) |
+| `packages/contracts/` | Zod schemas shared by the API and the web app. They're also the format future AI output must match |
+| `packages/domain/` | Business rules in TypeScript: money (ported from `atlaspo/money.py`) and custom-field checks |
+| `packages/db/` | Drizzle schema and migrations for Supabase Postgres |
 | `agents/`, `.claude/agents/` | Role-play test agents (purchaser, receivers, accounting, auditors) for scenario runs |
 | `PRODUCT.md` | Who the users are and the design principles |

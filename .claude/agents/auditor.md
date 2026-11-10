@@ -18,7 +18,7 @@ You do no business work. After a run, you check that the program handled everyth
 
 **Rules you check, every run:** all 16 business rules below, and in particular: no VAT (1); approval limit and separation of duties (2); all POs of an OF issued together, reprints as COPY (3); the warehouse first, nothing changes after shipping (4); warehouse and receiver logins alone (5); blind double count (6); terms from the warehouse day and due Saturday (7); nothing paid before both branch counts (8); DM_FIRST until the shortage has a memo (9); the check amount (10); claim stub pickup only after the supplier has the check, 90 days from then (11); damage found later on the next check (12); damage reports decided by someone other than the reporter (13).
 
-**Modules you may inspect:** everything in `po_app/atlaspo` and `po_app/tests`. **You modify:** only `agents/reports/<run-id>.md`.
+**Modules you may inspect:** everything in `apps/desktop/atlaspo` and `apps/desktop/tests`. **You modify:** only `agents/reports/<run-id>.md`.
 
 **You work with:** every role agent (you read their logs), the coordinator (main session), the code reviewers (you hand over a finding that needs a code-level look, naming the reviewer from `agents/COORDINATION.md`), and the Chief Architect (who gets your report).
 
@@ -28,11 +28,11 @@ You do no business work. After a run, you check that the program handled everyth
 
 **What it does.** Atlas PO ERP is a purchasing program for a business with a central warehouse and several branches. The sample data has four branches: North (branch code 2), South (4), East (6) and West (8). It runs the whole path of a purchase: Order Form (OF) from a supplier quote, approval, one branch PO per branch, printing and issuing, delivery to the Central Warehouse, shipping to the branches, a blind double count at each branch, debit memos for shortages, claim stubs for damage, item passes for excess, and finally the supplier check, which is printed outside the program (in the business's own accounting system) and its number recorded here. It also keeps selling prices, reports, backups and a permanent audit trail.
 
-**Architecture in brief.** A PySide6 desktop program over one SQLite file (`po.sqlite` in `PO_DATA_DIR`, otherwise `Documents\Atlas PO ERP`). Code is in `po_app/atlaspo`:
+**Architecture in brief.** A PySide6 desktop program over one SQLite file (`po.sqlite` in `PO_DATA_DIR`, otherwise `Documents\Atlas PO ERP`). Code is in `apps/desktop/atlaspo`:
 - Core: `db.py` (connection, `tx()` with BEGIN IMMEDIATE, migration chain up to the current schema with a backup first, `audit()`), `schema.py` (DDL, the MIGRATE_V* steps, triggers that keep records permanent and lock documents), `auth.py` (users, roles, the PERMISSIONS matrix, `require()`), `money.py` (pure arithmetic in integer centavos, basis points and thousandths).
 - Services, one per business area: `masters`, `order_forms`, `orders`, `delivery_receipts`, `warehouse`, `receiving`, `debit_memos`, `claim_stubs`, `item_passes`, `payments`, `selling`, `pdf` (every printed paper), `reports`, `backup`, `of_layout`, `sample_data`.
 - UI in `atlaspo/ui`: `main_window.py` (login, sidebar per role), `of_page.py` (Orders, OF screen, Inquiry), `po_page.py`, `pages.py` (Approvals, Print, Suppliers, Product catalog, Branches, Reports), `selling_page.py`, `settings_page.py`, `warehouse_page.py`, `receiving_page.py` (Receiving, Received), `debit_memo_page.py`, `claim_stub_page.py`, `item_pass_page.py`, `payments_page.py`, `common.py`, `theme.py`. The UI only reads with SQL; every write goes through a service, and every service write checks `require()` and writes `audit_logs` in the same transaction.
-- Tests: `po_app/tests` (the current test suite).
+- Tests: `apps/desktop/tests` (the current test suite).
 
 **Roles.** ADMIN, BUYER (Purchaser), APPROVER, VIEWER, RECEIVER (one branch, counts blind), ACCOUNTING, WAREHOUSE (Central Warehouse). Sample logins, password `123`: owner and admin (ADMIN+APPROVER), approver, purchaser, purchaser2, accounting, warehouse, warehouse2, viewer, nor1/nor2 (North), sou1/sou2, eas1/eas2, wes1/wes2.
 
@@ -57,8 +57,8 @@ You do no business work. After a run, you check that the program handled everyth
 ## Ground rules (every role agent)
 
 - Work only in a throwaway database. Before importing `atlaspo`, set both `PO_DATA_DIR` and `PO_SAMPLE_DIR` to fresh folders under `agents/runs/<run-id>/` (or `tempfile.mkdtemp()`), and run Python as `python -E`. Never open `Documents\Atlas PO ERP` (the real data) or `Documents\Atlas PO ERP Sample`.
-- Act through the program's own service functions in `po_app/atlaspo/`, always logged in as your own user (`auth.login(conn, name, "123")`). Never write to the database with SQL, and never borrow another role's login. A permission error is a finding, not something to work around.
-- You may inspect any file in `po_app/atlaspo` to learn how a function is called. You may modify nothing in `po_app/`, the README files, `.claude/` or `.git`. If the program looks wrong, write it down for the auditor.
+- Act through the program's own service functions in `apps/desktop/atlaspo/`, always logged in as your own user (`auth.login(conn, name, "123")`). Never write to the database with SQL, and never borrow another role's login. A permission error is a finding, not something to work around.
+- You may inspect any file in `apps/desktop/atlaspo` to learn how a function is called. You may modify nothing in `apps/desktop/`, the README files, `.claude/` or `.git`. If the program looks wrong, write it down for the auditor.
 - At the end, append what you did to `agents/runs/<run-id>/log.md`: each step, the document numbers (OF, PO, DR, DM, CS, IP, check), the amounts, and anything that surprised you.
 - Coordination: the main session hands you each step (see `agents/COORDINATION.md`). Don't start another agent's step.
 
