@@ -137,7 +137,7 @@ def test_a_return_to_stock_for_sale_waits_and_a_rejected_one_never_counts(w):
     state = {p["id"]: p["state"] for p in sales.papers(w.conn, w.admin)}
     assert state[back] == sales.REJECTED
     damaged = sales.record(w.conn, w.r1, NORTH, _day(), [{"product_id": w.socks, "qty": "1", "bucket": "DAMAGED"}], kind=sales.RETURN)
-    assert not sales.is_waiting(w.conn, damaged)
+    assert sales.is_waiting(w.conn, damaged)  # a damaged return pays money out too
 
 
 def test_nobody_cancels_their_own_sales_or_sales_a_later_count_took_in(w, clock):
@@ -149,7 +149,7 @@ def test_nobody_cancels_their_own_sales_or_sales_a_later_count_took_in(w, clock)
         sales.cancel(w.conn, w.admin, sale, "Typo")
     clock(2026, 11, 9, 8, 0)
     inv.open_count(w.conn, w.buyer, NORTH)
-    with pytest.raises(POError, match="already took these"):
+    with pytest.raises(POError, match="being counted"):
         sales.cancel(w.conn, w.boss2, sale, "Typo")
 
 
@@ -170,7 +170,8 @@ def test_lines_with_no_cost_have_no_profit_and_transfer_losses_are_missing_stock
     inv.receive_transfer(w.conn, w.s1, t, {w.socks: "1"})
     lost = sales.shrinkage(w.conn, w.admin, _day(1), _day(), SOUTH)
     assert [(r["how"], r["item_code"], r["missing_m"]) for r in lost] == [("TRANSFER", "SOCK-1", 2000)]
-    assert sales.shrinkage(w.conn, w.admin, _day(1), _day(), NORTH) == []
+    assert [r["from"] for r in sales.shrinkage(w.conn, w.admin, _day(1), _day(), NORTH)] == [NORTH]  # the sender sees it too
+    assert sales.shrinkage(w.conn, w.admin, _day(1), _day(), inv.WAREHOUSE) == []
 
 
 def test_by_department_counts_each_product_once(w):

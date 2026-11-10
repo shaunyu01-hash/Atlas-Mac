@@ -600,6 +600,9 @@ def cancel(conn, user: User, of_id: int, reason: str) -> None:
                      (CANCELLED, stamp, user.id, reason.strip(), stamp, of_id))
         audit(conn, user, "OF_CANCEL", "order_form", of_id, of_id=of_id, summary=f"{label(of)} cancelled: {reason.strip()}",
               previous={"status": of["status"]})
+        if of["status"] == APPROVED:
+            # Its prices set the catalog cost on approval; a cancelled order leaves none behind.
+            masters.recost_after_cancel(conn, user, [r[0] for r in conn.execute("SELECT product_id FROM order_form_items WHERE of_id = ? AND product_id IS NOT NULL", (of_id,))])
 
 
 # ------------------------------------------------------------------ amendments, before POs exist

@@ -289,9 +289,9 @@ def _store_product(conn, user: User, data: dict, product_id: int | None = None) 
         if old is None:
             raise POError("That product no longer exists.")
         changed = {k: d[k] for k in PRODUCT_FIELDS if old[k] != d[k]}
-        if "pieces_per_unit" in changed and _has_stock(conn, product_id):
-            raise POError(f"{old['item_code']} already has stock on the books, so its pieces per unit can't change: every piece counted so far "
-                          "would change meaning. Add the new pack size as a new product.")
+        if ("pieces_per_unit" in changed or "uom" in changed) and _has_stock(conn, product_id):
+            raise POError(f"{old['item_code']} already has stock on the books, so its unit and pieces per unit can't change: every piece counted "
+                          "so far would change meaning. Add the new pack size as a new product.")
         if changed:
             sets = ", ".join(f"{k} = ?" for k in changed)
             conn.execute(f"UPDATE products SET {sets}, updated_at = ? WHERE id = ?", [*changed.values(), stamp, product_id])
@@ -303,6 +303,10 @@ def _store_product(conn, user: User, data: dict, product_id: int | None = None) 
 
 def _has_stock(conn, product_id: int) -> bool:
     """Whether inventory has counted this product in pieces anywhere: received on a PO, or on any inventory paper."""
+    code = conn.execute("SELECT item_code FROM products WHERE id = ?", (product_id,)).fetchone()
+    if code and code[0] and conn.execute("SELECT 1 FROM branch_extra_items e JOIN branch_received r ON r.po_item_id = -e.id WHERE e.item_code = ? LIMIT 1",
+                                         (code[0],)).fetchone():
+        return True
     for sql in ("SELECT 1 FROM purchase_order_items WHERE product_id = ? AND received_qty_m > 0",
                 "SELECT 1 FROM stock_movements WHERE product_id = ?", "SELECT 1 FROM stock_sale_lines WHERE product_id = ?",
                 "SELECT 1 FROM stock_count_entries WHERE product_id = ?", "SELECT 1 FROM stock_transfer_lines WHERE product_id = ?",
@@ -367,23 +371,43 @@ def record_products(conn, user: User, supplier_id: int, items: list[dict]) -> No
         item["product_id"] = _store_product(conn, user, {
             "item_code": code, "department_id": item["department_id"], "description": item["description"], "brand": item["brand"], "size": item["size"],
             "color": item["color"], "uom": item["uom"], "pieces_per_unit": item["pieces_per_unit"], "box_size": item["box_size"], "supplier_id": supplier_id,
-            "supplier_item_code": item["supplier_item_code"], "last_cost_c": item["unit_cost_c"], "selling_c": item["selling_c"]})
+            "supplier_item_code": item["supplier_item_code"], "last_cost_c": _line_cost(item), "selling_c": item["selling_c"]})
         costed.add(item["product_id"])
 
 
-def _approved_cost(conn, user: User, product_id: int, item: dict) -> None:
-    """The catalog cost becomes an approved order line's unit cost, per the product's own pack size. Audited when it changes."""
+def _line_cost(item: dict) -> int | None:
+    """What one unit on an order line costs after its line discounts: net_unit_c when the line has it, else the price."""
+    for key in ("net_unit_c", "unit_cost_c"):
+        if item.get(key) is not None:
+            return int(item[key])
+    return None
+
+
+def _approved_cost(conn, user: User, product_id: int, item: dict, why: str = "an approved order") -> None:
+    """The catalog cost becomes an approved order line's net unit cost, per the product's own pack size. A free line (cost 0) leaves it
+    alone: free goods say nothing about what the product costs. Audited when it changes."""
     p = conn.execute("SELECT item_code, pieces_per_unit, last_cost_c FROM products WHERE id = ?", (product_id,)).fetchone()
-    if p is None or item.get("unit_cost_c") is None:
+    line = _line_cost(item)
+    if p is None or not line:
         return
     line_ppu, own_ppu = int(item.get("pieces_per_unit") or 1), int(p["pieces_per_unit"] or 1)
-    cost = int(item["unit_cost_c"]) if line_ppu == own_ppu else int((Decimal(int(item["unit_cost_c"])) * own_ppu / line_ppu).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    cost = line if line_ppu == own_ppu else int((Decimal(line) * own_ppu / line_ppu).quantize(Decimal(1), rounding=ROUND_HALF_UP))
     if cost == p["last_cost_c"]:
         return
     with tx(conn):
         conn.execute("UPDATE products SET last_cost_c = ?, updated_at = ? WHERE id = ?", (cost, timestamp(), product_id))
-        audit(conn, user, "PRODUCT_COST_CHANGE", "product", product_id, summary=f"{p['item_code']}: cost from an approved order",
+        audit(conn, user, "PRODUCT_COST_CHANGE", "product", product_id, summary=f"{p['item_code']}: cost from {why}",
               previous={"last_cost_c": p["last_cost_c"]}, new={"last_cost_c": cost})
+
+
+def recost_after_cancel(conn, user: User, product_ids) -> None:
+    """When an approved OF is cancelled, each of its products takes its cost from the latest approved order line still standing, so a
+    cancelled order leaves no price behind. A product with no other order keeps its cost."""
+    for pid in set(product_ids):
+        row = conn.execute("SELECT i.net_unit_c, i.unit_cost_c, i.pieces_per_unit FROM order_form_items i JOIN order_forms f ON f.id = i.of_id"
+                           " WHERE i.product_id = ? AND f.status = 'APPROVED' AND i.net_unit_c > 0 ORDER BY f.approval_date DESC, f.id DESC LIMIT 1", (pid,)).fetchone()
+        if row is not None:
+            _approved_cost(conn, user, pid, dict(row), "the latest order still standing, after a cancelled one")
 
 
 def search_products(conn, text: str = "", department_id: int | None = None, supplier_id: int | None = None,

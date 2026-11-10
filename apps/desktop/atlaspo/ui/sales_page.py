@@ -515,11 +515,13 @@ class SalesReportsWidget(QTabWidget):
                                        "" if by_place else fmt_qty(r["qty_m"]), fmt_peso(r["amount_c"]),
                                        "No cost" if r["cost_c"] is None else fmt_peso(r["cost_c"]), "" if r["profit_c"] is None else fmt_peso(r["profit_c"]),
                                        service.fmt_margin(r["margin_bp"])] for r in rows])
-        priced = [r for r in rows if r["profit_c"] is not None]
-        amount, profit, base = sum(r["amount_c"] for r in rows), sum(r["profit_c"] for r in priced), sum(r["amount_c"] for r in priced)
-        missing = sum(1 for r in rows if r["profit_c"] is None)
-        self.sales_total.setText(f"Net sales {fmt_peso(amount)}, gross profit {fmt_peso(profit)}" + (f" ({profit * 100 // base}%)" if base else "")
-                                 + (f". {missing} {'line has' if missing == 1 else 'lines have'} products with no cost, so their profit isn't counted." if missing else ""))
+        amount = sum(r["amount_c"] for r in rows)
+        profit = sum(r["profit_c"] for r in rows if r["profit_c"] is not None)
+        base = sum(r["costed_c"] for r in rows)
+        uncosted = sum(r["no_cost_c"] for r in rows)
+        margin = service.fmt_margin(service._round(service.Decimal(profit) * 10000 / base)) if base else ""
+        self.sales_total.setText(f"Net sales {fmt_peso(amount)}, gross profit {fmt_peso(profit)}" + (f" ({margin})" if margin else "")
+                                 + (f". {fmt_peso(uncosted)} of sales are of products with no cost, so they're left out of the profit." if uncosted else ""))
         movers = service.movers(self.conn, self.user, place)
         fill_table(self.movers_table, [[r["location_name"], r["item_code"], r["description"], r["unit"], fmt_qty(r["sold_m"]), fmt_qty(r["per_day_m"]), fmt_qty(r["good_m"]),
                                         fmt_peso(r["value_c"]), "" if r["days_left"] is None else r["days_left"], fmt_date(r["last_sold"]),

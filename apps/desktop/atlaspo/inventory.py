@@ -163,10 +163,11 @@ def live_since(conn) -> str:
 # ------------------------------------------------------------------ every movement, from purchasing and from inventory
 
 def _product_of(col: str) -> str:
-    """The catalog product a PO line or an extra line (negative id) stands for: its own link, or the catalog product with the same SKU."""
-    return (f"(CASE WHEN {col} > 0 THEN (SELECT COALESCE(i.product_id, (SELECT p.id FROM products p WHERE i.item_code <> '' AND p.item_code = i.item_code))"
-            f" FROM purchase_order_items i WHERE i.id = {col})"
-            f" ELSE (SELECT p.id FROM branch_extra_items e JOIN products p ON p.item_code = e.item_code WHERE e.id = -{col} AND e.item_code <> '') END)")
+    """The catalog product a PO line or an extra line (negative id) stands for: its own link, or the catalog product with the same SKU.
+    Its own table names are unusual on purpose, so a caller's `i` or `p` never shadows them (that once matched every line to one product)."""
+    return (f"(CASE WHEN {col} > 0 THEN (SELECT COALESCE(_poi.product_id, (SELECT _prd.id FROM products _prd WHERE _poi.item_code <> '' AND _prd.item_code = _poi.item_code))"
+            f" FROM purchase_order_items _poi WHERE _poi.id = {col})"
+            f" ELSE (SELECT _prx.id FROM branch_extra_items _ext JOIN products _prx ON _prx.item_code = _ext.item_code WHERE _ext.id = -{col} AND _ext.item_code <> '') END)")
 
 
 _CS_COUNT = "COALESCE((SELECT g.pieces_m FROM goods_arrivals g WHERE g.kind = 'CS' AND g.item_id = ci.id), ci.pieces_m)"
@@ -175,8 +176,10 @@ _COLS = "moved_at, location, product_id, bucket, qty_m, kind, ref, po_id, po_ite
 
 
 def _first_received(item_col: str) -> str:
-    """When the branch first counted in a PO line: when damaged goods that later leave on a claim stub or a debit memo reached its books."""
-    return f"(SELECT MIN(r.accepted_at) FROM branch_received r WHERE r.po_id = po.id AND r.po_item_id = {item_col})"
+    """When damaged pieces of a PO line first reached the branch's books: the earliest receipt in force with damage on it. Goods that later
+    leave damaged stock on a claim stub or a debit memo count only when that is on or after the start date."""
+    return (f"(SELECT MIN(r.accepted_at) FROM branch_received r WHERE r.po_id = po.id AND r.po_item_id = {item_col} AND r.damaged_m > 0"
+            f" AND {_IN_FORCE})")
 
 
 # When the pieces on a claim stub reached the branch's damaged stock: when the damage was found later, or when the line was counted in.
@@ -185,6 +188,8 @@ _CS_DAMAGED_FROM = (f"(CASE WHEN EXISTS (SELECT 1 FROM late_damage ld WHERE ld.c
 # Damaged pieces counted in on a line that wasn't on the PO (an extra, negative id). Its item pass sends every piece back, damaged ones too.
 _IP_DAMAGED = (f"(CASE WHEN pi.po_item_id < 0 THEN MIN(pi.pieces_m, COALESCE((SELECT SUM(r.damaged_m) FROM branch_received r"
                f" WHERE r.po_id = po.id AND r.po_item_id = pi.po_item_id AND {_IN_FORCE}), 0)) ELSE 0 END)")
+# The same, counting only damage received on or after the start date: what the books hold in damaged stock to take off.
+_IP_DAMAGED_LIVE = _IP_DAMAGED.replace(f"AND {_IN_FORCE}), 0)", f"AND {_IN_FORCE} AND r.accepted_at >= :since), 0)")
 # Sales waiting for approval, or rejected, never touch the books.
 _NOT_HELD_BACK = "NOT EXISTS (SELECT 1 FROM sale_holds h WHERE h.sale_id = s.id AND h.decision IS NOT 'APPROVED')"
 
@@ -223,7 +228,7 @@ moves({_COLS}) AS (
             OR (b.bucket = 'DAMAGED' AND cs.status = 'CANCELLED' AND cs.closed_at >= :since))
     UNION ALL
     SELECT ip.printed_at, po.branch_code, {_product_of('pi.po_item_id')}, b.bucket,
-           CASE b.bucket WHEN 'GOOD' THEN {_IP_DAMAGED} - pi.pieces_m ELSE -{_IP_DAMAGED} END, 'IP_SENT', ip.ip_number, po.id, pi.po_item_id
+           CASE b.bucket WHEN 'GOOD' THEN {_IP_DAMAGED} - pi.pieces_m ELSE -{_IP_DAMAGED_LIVE} END, 'IP_SENT', ip.ip_number, po.id, pi.po_item_id
       FROM item_passes ip JOIN item_pass_items pi ON pi.ip_id = ip.id JOIN purchase_orders po ON po.id = ip.po_id
       JOIN (SELECT 'GOOD' AS bucket UNION ALL SELECT 'DAMAGED') b
      WHERE ip.status <> 'CANCELLED' AND ip.printed_at >= :since
@@ -398,7 +403,8 @@ def not_in_catalog(conn, user: User) -> list[dict]:
 
 
 def set_live_since(conn, user: User, day: str) -> None:
-    """Orders first received before this day stay off the books. Changing it changes every book, so only Admin can."""
+    """Purchasing movements before this day stay off the books. Changing it changes every book, so only Admin can, and only before the first
+    stock count is posted: after that, counts and sales already rest on the books as they were."""
     require(user, "settings.edit")
     from datetime import date
     try:
@@ -406,6 +412,8 @@ def set_live_since(conn, user: User, day: str) -> None:
     except (TypeError, ValueError):
         raise POError("Choose a date.") from None
     with tx(conn):
+        if conn.execute("SELECT 1 FROM stock_counts WHERE status = 'POSTED' LIMIT 1").fetchone():
+            raise POError("A stock count has been posted, so the start date can't change any more: every book since rests on it.")
         old = live_since(conn)
         conn.execute("INSERT INTO system_settings(key, value, updated_at, updated_by) VALUES ('inventory.live_since', ?, ?, ?)"
                      " ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
@@ -414,6 +422,27 @@ def set_live_since(conn, user: User, day: str) -> None:
 
 
 # ------------------------------------------------------------------ stock counts
+
+def count_in_the_way(conn, location: int, moment: str, product_ids=None) -> dict | None:
+    """A stock count at this place, not cancelled, covering any of these products (every product when None), that is still open or was
+    posted after `moment`. Approving, cancelling or recounting something dated at `moment` would then change stock that count already saw,
+    and it would be counted twice."""
+    depts = None
+    if product_ids is not None:
+        ids = list(product_ids)
+        depts = {r[0] for r in conn.execute(f"SELECT DISTINCT department_id FROM products WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else set()
+    for c in conn.execute("SELECT count_number, department_id, status, substr(opened_at, 1, 10) AS day FROM stock_counts WHERE location_code = ?"
+                          " AND status <> 'CANCELLED' AND (closed_at IS NULL OR closed_at > ?) ORDER BY opened_at", (location, moment)):
+        if depts is None or c["department_id"] is None or c["department_id"] in depts:
+            return dict(c)
+    return None
+
+
+def _count_words(conn, count: dict, location: int) -> str:
+    if count["status"] in (COUNTING, AGREED):
+        return f"{place_name(conn, location)} is being counted on {count['count_number']}. Post or cancel the count first."
+    return f"Stock count {count['count_number']} at {place_name(conn, location)} already took this in. Put the books right with an adjustment instead."
+
 
 def _count(conn, count_id: int):
     row = conn.execute("SELECT * FROM stock_counts WHERE id = ?", (count_id,)).fetchone()
@@ -592,7 +621,8 @@ def count_results(conn, user: User, count_id: int) -> dict:
         else:
             book_m = books.get(r["product_id"], 0) if books is not None else r["book_m"]
         diff = None if r["agreed_m"] is None else r["agreed_m"] - book_m
-        lines.append({"product_id": r["product_id"], "item_code": r["item_code"], "description": r["description"], "size": r["size"], "color": r["color"],
+        warning = _not_for_sale(conn, count["location_code"], r["product_id"]) if r["added_by"] is not None else ""
+        lines.append({"warning": warning, "product_id": r["product_id"], "item_code": r["item_code"], "description": r["description"], "size": r["size"], "color": r["color"],
                       "unit": unit(r), "book_m": book_m, "start_m": r["book_m"], "agreed_m": r["agreed_m"], "diff_m": diff, "found": r["added_by"] is not None,
                       "counts": "; ".join(entries.get(r["product_id"], [])), "diff_value_c": value_c(diff or 0, r) if show_cost else None})
     return {**dict(count), "location_name": place_name(conn, count["location_code"]), "department": _dept_name(conn, count["department_id"]),
@@ -601,11 +631,46 @@ def count_results(conn, user: User, count_id: int) -> dict:
             "over_value_c": sum(l["diff_value_c"] for l in lines if show_cost and (l["diff_m"] or 0) > 0)}
 
 
+def _not_for_sale(conn, location: int, product_id: int) -> str:
+    """Why goods found at the warehouse may not be stock for sale: some are held for a supplier, or a delivery of them waits to ship."""
+    if location != WAREHOUSE:
+        return ""
+    notes = []
+    held = book(conn, WAREHOUSE, HELD).get(product_id, 0)
+    if held > 0:
+        notes.append(f"{fmt_qty(held)} held for a supplier")
+    waiting = conn.execute(f"SELECT COUNT(*) FROM warehouse_deliveries d JOIN purchase_order_items i ON i.po_id = d.po_id"
+                           f" WHERE d.shipped_at IS NULL AND {_product_of('i.id')} = ?", (product_id,)).fetchone()[0]
+    if waiting:
+        notes.append("a delivery of it waits to ship")
+    return ("Found here, but " + " and ".join(notes) + ". Check these aren't the same goods.") if notes else ""
+
+
 def moved_since(conn, count_id: int) -> int:
     """How many movements reached this place's good stock after the count started. Posting allows for them; the office sees how many."""
     count = _count(conn, count_id)
     return conn.execute(_moves_sql("location = :loc AND bucket = 'GOOD' AND moved_at > :at AND NOT (kind = 'COUNT')", "COUNT(*)"),
                         _params(conn, loc=count["location_code"], at=count["opened_at"])).fetchone()[0]
+
+
+def _purchasing_during(conn, count) -> str:
+    """What purchasing changed in this place's good stock after the count opened: a delivery count or recount approved, damage found
+    later approved, or claim stub or item pass goods forfeited into stock at the warehouse. '' when nothing."""
+    loc, at = count["location_code"], count["opened_at"]
+    row = conn.execute("SELECT po.po_number FROM branch_counts b JOIN purchase_orders po ON po.id = b.po_id WHERE po.branch_code = ? AND b.approved_at > ?"
+                       " ORDER BY b.approved_at LIMIT 1", (loc, at)).fetchone()
+    if row:
+        return f"A delivery count on {row[0]} was approved at {place_name(conn, loc)}"
+    row = conn.execute("SELECT cs.cs_number FROM claim_stubs cs JOIN late_damage ld ON ld.cs_id = cs.id JOIN purchase_orders po ON po.id = cs.po_id"
+                       " WHERE po.branch_code = ? AND cs.approved_at > ? LIMIT 1", (loc, at)).fetchone()
+    if row:
+        return f"Damage found later ({row[0]}) was approved at {place_name(conn, loc)}"
+    if loc == WAREHOUSE:
+        row = conn.execute("SELECT cs_number FROM claim_stubs WHERE status = 'FORFEITED' AND closed_at > ? UNION ALL"
+                           " SELECT ip_number FROM item_passes WHERE status = 'FORFEITED' AND closed_at > ? LIMIT 1", (at, at)).fetchone()
+        if row:
+            return f"Goods on {row[0]} were forfeited into stock for sale"
+    return ""
 
 
 def _books_when_counted(conn, count) -> dict[int, int]:
@@ -634,6 +699,9 @@ def post_count(conn, user: User, count_id: int) -> int:
             raise POError("Only a count both people agree on can be posted.")
         if conn.execute("SELECT 1 FROM stock_count_entries WHERE count_id = ? AND counted_by = ?", (count_id, user.id)).fetchone():
             raise POError("You counted this stock, so someone else posts it.")
+        moved = _purchasing_during(conn, count)
+        if moved:
+            raise POError(f"{moved} while {count['count_number']} was open, so the count can't tell which goods it saw. Cancel this count and count again.")
         stamp = timestamp()
         books = _books_when_counted(conn, count)
         diffs = [(count["location_code"], r["product_id"], GOOD, r["agreed_m"] - books[r["product_id"]], "COUNT", count_id, user.id, stamp)
@@ -657,6 +725,8 @@ def cancel_count(conn, user: User, count_id: int, reason: str) -> None:
         _check_place(conn, user, count["location_code"])
         if count["status"] not in (COUNTING, AGREED):
             raise POError("This stock count is already finished.")
+        if count["status"] == AGREED and not user.can("stock.post"):
+            raise POError("Both counts agree on this one, so only management can cancel it.")
         conn.execute("UPDATE stock_counts SET status = ?, closed_by = ?, closed_at = ?, cancel_reason = ? WHERE id = ?", (CANCELLED, user.id, timestamp(), reason, count_id))
         audit(conn, user, "STOCK_COUNT_CANCEL", "stock_count", count_id, summary=f"{count['count_number']} cancelled: {reason}")
 
@@ -731,6 +801,13 @@ def decide_adjustment(conn, user: User, adj_id: int, approve: bool, note: str = 
             raise POError("This adjustment was already decided.")
         if adj["prepared_by"] == user.id:
             raise POError("You prepared this adjustment, so someone else approves it.")
+        if approve:
+            in_way = count_in_the_way(conn, adj["location_code"], adj["prepared_at"],
+                                      [r[0] for r in conn.execute("SELECT product_id FROM stock_adjustment_lines WHERE adj_id = ?", (adj_id,))])
+            if in_way:
+                raise POError(_count_words(conn, in_way, adj["location_code"]) if in_way["status"] in (COUNTING, AGREED) else
+                              f"Stock count {in_way['count_number']} at {place_name(conn, adj['location_code'])} has counted these goods since this "
+                              "adjustment was prepared, so it already took the change in. Reject this one.")
         stamp = timestamp()
         conn.execute("UPDATE stock_adjustments SET status = ?, decided_by = ?, decided_at = ?, decision_note = ? WHERE id = ?",
                      (APPROVED if approve else REJECTED, user.id, stamp, note, adj_id))
@@ -790,10 +867,13 @@ def send_transfer(conn, user: User, from_code: int, to_code: int, lines: dict[in
         if to_code != WAREHOUSE and conn.execute("SELECT 1 FROM branches WHERE code = ? AND kind = 'BRANCH' AND active = 1", (to_code,)).fetchone() is None:
             raise POError("Choose an open branch to send to.")
         rows = []
+        books = book(conn, from_code)
         for pid, text in lines.items():
             p = _product(conn, pid)
             qty = _qty(text, p)
             if qty:
+                if qty > books.get(pid, 0):
+                    raise POError(f"{p['item_code']}: that's more than {place_name(conn, from_code)} has for sale on the books. Count it first, or send less.")
                 rows.append((pid, qty))
         if not rows:
             raise POError("Type a quantity for at least one product.")
@@ -833,8 +913,9 @@ def receive_transfer(conn, user: User, transfer_id: int, figures: dict[int, str]
         got = {pid: _qty(figures[pid], r) for pid, r in lines.items()}
         for pid, qty in got.items():
             conn.execute("UPDATE stock_transfer_lines SET received_m = ? WHERE transfer_id = ? AND product_id = ?", (qty, transfer_id, pid))
+        # What arrived beyond what was sent isn't added: no paper made it, so the next count finds it, and the office sees it as over.
         conn.executemany("INSERT INTO stock_movements(location_code, product_id, bucket, qty_m, kind, ref_id, moved_by, moved_at) VALUES (?,?,?,?,?,?,?,?)",
-                         [(t["to_code"], pid, GOOD, q, "TRANSFER_IN", transfer_id, user.id, stamp) for pid, q in got.items() if q])
+                         [(t["to_code"], pid, GOOD, min(q, lines[pid]["sent_m"]), "TRANSFER_IN", transfer_id, user.id, stamp) for pid, q in got.items() if q])
         conn.execute("UPDATE stock_transfers SET status = ?, closed_by = ?, closed_at = ? WHERE id = ?", (RECEIVED, user.id, stamp, transfer_id))
         short = sum(max(r["sent_m"] - got[pid], 0) for pid, r in lines.items())
         over = sum(max(got[pid] - r["sent_m"], 0) for pid, r in lines.items())
@@ -854,6 +935,14 @@ def cancel_transfer(conn, user: User, transfer_id: int, reason: str) -> None:
         t = _transfer(conn, transfer_id)
         if t["status"] != SENT:
             raise POError("Only a transfer still on the way can be cancelled.")
+        if t["sent_by"] == user.id:
+            raise POError("You sent this transfer, so someone else cancels it.")
+        in_way = count_in_the_way(conn, t["from_code"], t["sent_at"],
+                                  [r[0] for r in conn.execute("SELECT product_id FROM stock_transfer_lines WHERE transfer_id = ?", (transfer_id,))])
+        if in_way:
+            raise POError(_count_words(conn, in_way, t["from_code"]) if in_way["status"] in (COUNTING, AGREED) else
+                          f"Stock count {in_way['count_number']} at {place_name(conn, t['from_code'])} has counted since this was sent. "
+                          "Have the other place count it in (0 if nothing came) instead.")
         stamp = timestamp()
         conn.executemany("INSERT INTO stock_movements(location_code, product_id, bucket, qty_m, kind, ref_id, moved_by, moved_at) VALUES (?,?,?,?,?,?,?,?)",
                          [(t["from_code"], r["product_id"], GOOD, r["sent_m"], "TRANSFER_BACK", transfer_id, user.id, stamp)

@@ -220,6 +220,9 @@ def record_arrival(conn, user: User, kind: str, number: str, po_id: int, lines: 
             got = parse_qty(text, "PC")
         except ValueError as e:
             raise POError(f"{line['description']}: {e}") from None
+        if got > line["pieces_m"]:
+            # Goods that came back can only be what the branch sent; more would invent stock held for the supplier.
+            raise POError(f"{line['description']}: that's more than the branch sent. Count again; anything extra isn't on this paper, so set it apart and tell the office.")
         counted.append((line, got))
         if got != line["pieces_m"]:
             notes.append(f"{line['description']}: {fmt_qty(got)} came, {fmt_qty(line['pieces_m'])} on the paper")

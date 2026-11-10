@@ -84,7 +84,7 @@ def levels(conn, user: User, location: int | None = None, only_low: bool = True)
             else:
                 units_m = int((Decimal(need) / 1000 / ppu).to_integral_value(rounding=ROUND_CEILING)) * 1000
             why_not = ("No supplier in the catalog" if p["supplier_id"] is None else "Supplier is inactive" if p["supplier_status"] != "ACTIVE"
-                       else "No purchase cost" if p["last_cost_c"] is None else "Product is inactive" if not p["active"] else "")
+                       else "No purchase cost" if not p["last_cost_c"] else "Product is inactive" if not p["active"] else "")
             out.append({"location": b["code"], "location_name": b["name"], "product_id": pid, "item_code": p["item_code"], "description": p["description"],
                         "size": p["size"], "color": p["color"], "unit": inv.unit(p), "uom": p["uom"], "pieces_per_unit": ppu,
                         "supplier_id": p["supplier_id"], "supplier": p["supplier"] or "", "last_cost_c": p["last_cost_c"],

@@ -417,7 +417,8 @@ class CountsPage(QWidget):
             res = service.count_results(self.conn, self.user, r["id"])
             fill_table(self.lines, [[l["item_code"], l["description"], l["size"], l["color"], l["unit"], fmt_qty(l["book_m"]), _qty(l["agreed_m"]),
                                      "" if l["diff_m"] is None else f"{'+' if l['diff_m'] > 0 else ''}{fmt_qty(l['diff_m'])}",
-                                     "" if l["diff_value_c"] is None or l["diff_m"] is None else fmt_peso(l["diff_value_c"]), l["counts"]] for l in res["lines"]])
+                                     "" if l["diff_value_c"] is None or l["diff_m"] is None else fmt_peso(l["diff_value_c"]),
+                                     (l["warning"] + " " if l["warning"] else "") + l["counts"]] for l in res["lines"]])
             text = {service.COUNTING: f"Round {r['round_no']}: " + (f"{len(r['counted_this_round'])} of 2 people have counted." if r["counted_this_round"] else "waiting for two people to count."),
                     service.AGREED: f"Both counts agree. Posting moves the books: {fmt_peso(res['short_value_c'])} missing, {fmt_peso(res['over_value_c'])} more than the books.",
                     service.POSTED: f"Posted by {r['closed_name']}, {fmt_datetime(r['closed_at'])}.",

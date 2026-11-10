@@ -2241,11 +2241,63 @@ BEGIN SELECT RAISE(ABORT, 'A finished stock count stays as it is'); END;
 CREATE TRIGGER IF NOT EXISTS stock_sale_cancelled_locked BEFORE UPDATE ON stock_sales
 WHEN OLD.status = 'CANCELLED'
 BEGIN SELECT RAISE(ABORT, 'Cancelled sales stay cancelled'); END;
+-- Each movement must be one of its paper's own lines, at the paper's own place, while the paper is in the state that writes it.
 CREATE TRIGGER IF NOT EXISTS stock_movements_from_a_paper BEFORE INSERT ON stock_movements
-WHEN NOT ((NEW.kind = 'ADJUSTMENT' AND (SELECT status FROM stock_adjustments WHERE id = NEW.ref_id) IS 'APPROVED')
-       OR (NEW.kind = 'COUNT' AND (SELECT status FROM stock_counts WHERE id = NEW.ref_id) IS 'AGREED')
-       OR (NEW.kind IN ('TRANSFER_OUT','TRANSFER_IN','TRANSFER_BACK') AND (SELECT status FROM stock_transfers WHERE id = NEW.ref_id) IS 'SENT'))
-BEGIN SELECT RAISE(ABORT, 'A stock movement comes from an approved adjustment, an agreed count or a transfer on its way'); END;
+WHEN NOT ((NEW.kind = 'ADJUSTMENT' AND (SELECT status FROM stock_adjustments WHERE id = NEW.ref_id) IS 'APPROVED'
+           AND NEW.location_code = (SELECT location_code FROM stock_adjustments WHERE id = NEW.ref_id)
+           AND EXISTS (SELECT 1 FROM stock_adjustment_lines WHERE adj_id = NEW.ref_id AND product_id = NEW.product_id AND bucket = NEW.bucket AND qty_m = NEW.qty_m)
+           AND NOT EXISTS (SELECT 1 FROM stock_movements WHERE kind = 'ADJUSTMENT' AND ref_id = NEW.ref_id AND product_id = NEW.product_id AND bucket = NEW.bucket))
+       OR (NEW.kind = 'COUNT' AND (SELECT status FROM stock_counts WHERE id = NEW.ref_id) IS 'AGREED' AND NEW.bucket = 'GOOD'
+           AND NEW.location_code = (SELECT location_code FROM stock_counts WHERE id = NEW.ref_id)
+           AND EXISTS (SELECT 1 FROM stock_count_lines WHERE count_id = NEW.ref_id AND product_id = NEW.product_id))
+       OR (NEW.kind IN ('TRANSFER_OUT','TRANSFER_BACK') AND (SELECT status FROM stock_transfers WHERE id = NEW.ref_id) IS 'SENT' AND NEW.bucket = 'GOOD'
+           AND NEW.location_code = (SELECT from_code FROM stock_transfers WHERE id = NEW.ref_id)
+           AND EXISTS (SELECT 1 FROM stock_transfer_lines WHERE transfer_id = NEW.ref_id AND product_id = NEW.product_id
+                       AND sent_m = CASE NEW.kind WHEN 'TRANSFER_OUT' THEN -NEW.qty_m ELSE NEW.qty_m END))
+       OR (NEW.kind = 'TRANSFER_IN' AND (SELECT status FROM stock_transfers WHERE id = NEW.ref_id) IS 'SENT' AND NEW.bucket = 'GOOD'
+           AND NEW.location_code = (SELECT to_code FROM stock_transfers WHERE id = NEW.ref_id)
+           AND EXISTS (SELECT 1 FROM stock_transfer_lines WHERE transfer_id = NEW.ref_id AND product_id = NEW.product_id AND NEW.qty_m BETWEEN 1 AND sent_m)))
+BEGIN SELECT RAISE(ABORT, 'A stock movement comes from one line of an approved adjustment, an agreed count or a transfer on its way'); END;
+
+-- Papers start where the program starts them, and move on only the way it moves them.
+CREATE TRIGGER IF NOT EXISTS stock_counts_start_counting BEFORE INSERT ON stock_counts
+WHEN NEW.status <> 'COUNTING' OR NEW.closed_by IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'A stock count starts as counting'); END;
+CREATE TRIGGER IF NOT EXISTS stock_counts_agreed_means_agreed BEFORE UPDATE OF status ON stock_counts
+WHEN NEW.status = 'AGREED' AND (NOT EXISTS (SELECT 1 FROM stock_count_lines WHERE count_id = NEW.id)
+                                OR EXISTS (SELECT 1 FROM stock_count_lines WHERE count_id = NEW.id AND agreed_m IS NULL))
+BEGIN SELECT RAISE(ABORT, 'A count is agreed only when every line is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_counts_closed_by_someone BEFORE UPDATE OF status ON stock_counts
+WHEN NEW.status IN ('POSTED','CANCELLED') AND (NEW.closed_by IS NULL OR NEW.closed_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'Say who finished the count, and when'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_lines_agreed_by_two BEFORE UPDATE OF agreed_m ON stock_count_lines
+WHEN NEW.agreed_m IS NOT NULL AND (SELECT COUNT(DISTINCT counted_by) FROM stock_count_entries
+                                   WHERE count_id = NEW.count_id AND product_id = NEW.product_id AND qty_m = NEW.agreed_m
+                                     AND round_no = (SELECT MAX(round_no) FROM stock_count_entries WHERE count_id = NEW.count_id AND product_id = NEW.product_id)) < 2
+BEGIN SELECT RAISE(ABORT, 'A line is agreed only when two people counted the same'); END;
+CREATE TRIGGER IF NOT EXISTS stock_adjustments_start_pending BEFORE INSERT ON stock_adjustments
+WHEN NEW.status <> 'PENDING' OR NEW.decided_by IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'An adjustment starts waiting for approval'); END;
+CREATE TRIGGER IF NOT EXISTS stock_adjustments_decided_by_someone BEFORE UPDATE OF status ON stock_adjustments
+WHEN NEW.status <> 'PENDING' AND (NEW.decided_by IS NULL OR NEW.decided_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'Say who decided the adjustment, and when'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfers_start_sent BEFORE INSERT ON stock_transfers
+WHEN NEW.status <> 'SENT' OR NEW.closed_by IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'A transfer starts on its way'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfers_closed_by_someone BEFORE UPDATE OF status ON stock_transfers
+WHEN NEW.status <> 'SENT' AND (NEW.closed_by IS NULL OR NEW.closed_at IS NULL)
+BEGIN SELECT RAISE(ABORT, 'Say who finished the transfer, and when'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sales_start_posted BEFORE INSERT ON stock_sales
+WHEN NEW.status <> 'POSTED' OR NEW.cancelled_by IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'Sales start recorded'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sales_cancelled_by_someone BEFORE UPDATE OF status ON stock_sales
+WHEN NEW.status = 'CANCELLED' AND (NEW.cancelled_by IS NULL OR NEW.cancelled_at IS NULL OR trim(NEW.cancel_reason) = '')
+BEGIN SELECT RAISE(ABORT, 'Say who cancelled the sales, when and why'); END;
+-- Lines go only on the newest paper, as it is recorded: never onto an older one afterwards. Sales come out of stock for sale.
+CREATE TRIGGER IF NOT EXISTS stock_sale_lines_only_new BEFORE INSERT ON stock_sale_lines
+WHEN NEW.sale_id <> (SELECT MAX(id) FROM stock_sales)
+  OR ((SELECT kind FROM stock_sales WHERE id = NEW.sale_id) = 'SALE' AND NEW.bucket <> 'GOOD')
+BEGIN SELECT RAISE(ABORT, 'Recorded sales cannot change. Cancel them and record them again'); END;
 
 INSERT INTO audit_logs(occurred_at, user_name, action, entity_type, summary)
 VALUES (datetime('now','localtime'), 'system', 'MIGRATE_V31', 'system', 'Inventory: unusual sales wait for approval; decided inventory papers are locked.');

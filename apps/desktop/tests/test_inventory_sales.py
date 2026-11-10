@@ -45,7 +45,8 @@ def test_a_typed_price_or_amount_wins_and_returns_go_back_where_chosen(stocked):
     w = stocked
     sale = sales.record(w.conn, w.buyer, NORTH, _day(), [{"product_id": w.socks, "qty": "2", "amount": "200"}])
     assert sales.paper_lines(w.conn, w.buyer, sale)[0]["price_c"] == 10000
-    sales.record(w.conn, w.r1, NORTH, _day(), [{"product_id": w.socks, "qty": "1", "bucket": "DAMAGED"}], kind=sales.RETURN)
+    back = sales.record(w.conn, w.r1, NORTH, _day(), [{"product_id": w.socks, "qty": "1", "bucket": "DAMAGED"}], kind=sales.RETURN)
+    sales.decide(w.conn, w.boss2, back, True)  # every return pays money out, so management approves it
     socks = _row(w, NORTH, w.socks)
     assert (socks["good_m"], socks["damaged_m"]) == (8000, 1000)
     with pytest.raises(POError, match="stock for sale"):

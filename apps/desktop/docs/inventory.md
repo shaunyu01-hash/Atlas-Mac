@@ -209,3 +209,86 @@ Phases 1 and 2 were reviewed before merging (access, receiving, ordering, screen
 ## Tests
 
 `tests/test_inventory_review.py` (23 tests), one per fix.
+
+# Forensic role run fixes (run inv-2026-11-10)
+
+Six role agents (branch receiver, warehouse, purchaser, management, accounting, forensic auditor) each worked a sample database, then tried to break their rules, checking every result in the database. Scenario: `agents/scenarios/inventory-forensic.md`; logs: `agents/runs/inv-2026-11-10/` (not in Git). These rules close what they found.
+
+## Counts and timing
+
+- `count_in_the_way(location, moment, products)`: a non-cancelled count at the place, covering the products, still open or posted after `moment`. While it exists, nothing dated at `moment` may change that place's stock:
+  - approving an adjustment (moment `prepared_at`);
+  - approving or cancelling a sales paper (moment `MIN(sale_date 23:59:59, entered_at)`);
+  - cancelling a transfer (moment `sent_at`, at the sender).
+
+  Open counts give "being counted"; posted ones give "already took this in". Reject the paper, or use an adjustment.
+- `post_count` refuses when purchasing changed the place's good stock while the count was open (`_purchasing_during`): a delivery count or recount approved there, damage found later approved, or claim stub or item pass goods forfeited at the warehouse. Cancel the count and count again.
+- Found products at the warehouse carry a `warning` in `count_results` when some are held for a supplier or a delivery of them waits to ship.
+- `inventory.live_since` can't change once any count is posted. An AGREED count can be cancelled only with `stock.post`.
+
+## Transfers
+
+- No sending more than the sender's good stock on the books.
+- Counting in more than was sent adds only what was sent; the excess shows as over on Missing stock.
+- Missing stock lists transfer losses at both places ("On transfer from …").
+- The sender never cancels their own transfer.
+
+## Sales
+
+- **Every customer return waits for approval,** damaged ones too, because a return pays money out.
+- **Sales:** with no catalog price, a sale below cost waits.
+- **Returns:** price and cost default to the latest sale at that place that reached the books.
+- **POS files:**
+  - a file whose lines (product, quantity, amount) match an earlier import for the same place and day is refused, whatever its layout;
+  - a negative quantity line is refused;
+  - `record()` no longer takes `source` or file fields (`import_file` uses `_record`);
+  - `import_file` checks permission first.
+- Prices above ₱1,000,000,000 a unit are refused.
+- **Reports:**
+  - profit is worked on lines with a cost (`costed_c`);
+  - `no_cost_c` is the sales of products with no cost, shown apart, so the totals no longer change with the grouping;
+  - the total margin is rounded half up.
+
+## Catalog cost
+
+- The cost is the approved line's net unit cost (after line discounts), converted to the product's pieces per unit. A free line (cost 0) leaves it alone.
+- `order_forms.cancel` of an APPROVED OF calls `masters.recost_after_cancel`: each product takes the cost of its latest approved line still standing.
+- A product's `uom` is fixed once it has stock, like pieces per unit. `_has_stock` also sees receipts on extra lines matched by SKU.
+- Reorder treats a cost of 0 as no cost.
+
+## Reorder
+
+- `inventory._product_of` uses its own table names (`_poi`, `_prd`, `_ext`, `_prx`). Before, a caller's alias `i` shadowed it, and every open PO line was credited to one product, so issued POs never counted as on order.
+
+## Warehouse arrivals
+
+- `claim_stubs.record_arrival` refuses a figure above the paper.
+- Short arrivals show on Missing stock as "Short on arrival from a branch".
+
+## Data model (V31, extended)
+
+- `stock_movements_from_a_paper`: each movement must be one line of its paper, at the paper's place. An adjustment movement matches its line exactly, once. A count movement is GOOD and must be on the count. Transfer out/back must equal what was sent, at the sender; transfer in must be at most that, at the receiver.
+- Papers must be inserted in their first state and close with who and when:
+  - counts COUNTING, adjustments PENDING, transfers SENT, sales POSTED;
+  - an AGREED count needs every line agreed by two people;
+  - only RECEIVER or WAREHOUSE users write count entries;
+  - sale lines go only on the newest paper (sales: GOOD only);
+  - only ADMIN or APPROVER decide holds.
+
+## Known, not changed
+
+- **Receiving:** a delivery recount after a count was posted still moves the books, because the recount fixes what the supplier is paid and payments come first. Count the product again after a recount.
+- **Warehouse:** it can read claim stub and debit memo costs, through `receiving.review` (purchasing).
+- **Transfers:**
+  - counted in by one person;
+  - office staff (BUYER) can send from any place, but no more than the books hold.
+- **Catalog:**
+  - purchasers set the catalog cost and selling price by hand on the Products screen (`master.edit`), audited;
+  - old drafts count as on order until deleted;
+  - amendments before POs exist apply without approval (purchasing rule).
+- **Adjustments:** a RETURNED adjustment makes no debit memo.
+- **Direct SQL:** `INSERT OR REPLACE` with `recursive_triggers` off bypasses delete triggers; the program's own connection turns them on. `reorder_levels` has no triggers; its changes are audited.
+
+## Tests
+
+`tests/test_inventory_forensic.py` (14 tests).
