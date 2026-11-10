@@ -66,6 +66,10 @@ PERMISSIONS = {
     "adjust.prepare": {"ADMIN", "BUYER", "RECEIVER", "WAREHOUSE"},
     "transfer.send": {"ADMIN", "BUYER", "RECEIVER", "WAREHOUSE"},
     "transfer.receive": {"ADMIN", "RECEIVER", "WAREHOUSE"},
+    # Branch staff record what their branch sold; the warehouse records forfeited goods it sells. Cancelling recorded sales is management's.
+    "sales.record": {"ADMIN", "BUYER", "RECEIVER", "WAREHOUSE"},
+    # Purchasers set the minimum and target stock of a product at a branch, over what the program works out.
+    "reorder.edit": {"ADMIN", "BUYER"},
 }
 
 _N, _R, _P = 2**14, 8, 1

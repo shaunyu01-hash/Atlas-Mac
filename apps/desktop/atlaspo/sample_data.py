@@ -413,6 +413,30 @@ def _inventory(s: _Seed, owner_user) -> None:
         pid, qty = stock[0]
         inventory.prepare_adjustment(conn, s.people[NORTH][0], NORTH, "DAMAGED", [{"product_id": pid, "qty": "1"}], "Water damage in the stock room")
         inventory.send_transfer(conn, s.buyer, NORTH, SOUTH, {pid: str(max(qty // 1000 // 4, 1))}, "South ran out")
+    _sales(s)
+
+
+def _sales(s: _Seed) -> None:
+    """A week of sales at every branch, typed in by a receiver, a customer return, and a level set by hand, so Sales, Reorder and the
+    reports have something to show. Each branch sells a few of its products every day; the rest sit, so some show as not moving."""
+    from . import inventory, reorder, stock_sales
+    conn = s.conn
+    for code in (NORTH, SOUTH, EAST, WEST):
+        stock = sorted((pid, qty) for pid, qty in inventory.book(conn, code).items() if qty > 0)[:6]
+        start = 5 if code == EAST else 4  # East's count started on the 4th, so its sales start then
+        for day in range(start, 10):
+            _at(2026, 11, day, 18)
+            lines = [{"product_id": pid, "qty": str(max(qty // 1000 // (8 + n), 1))} for n, (pid, qty) in enumerate(stock) if (day + n) % 3]
+            if lines:
+                stock_sales.record(conn, s.people[code][day % 2], code, f"2026-11-{day:02d}", lines)
+    _at(2026, 11, 9, 18)
+    stock = sorted(inventory.book(conn, SOUTH).items())
+    if stock:
+        stock_sales.record(conn, s.people[SOUTH][0], SOUTH, "2026-11-09", [{"product_id": stock[0][0], "qty": "1", "bucket": "DAMAGED"}],
+                           kind=stock_sales.RETURN, note="Customer brought it back broken")
+        # Two products South keeps well stocked, set by hand above what it has, so the reorder list has work on it.
+        for pid, qty in stock[:2]:
+            reorder.set_levels(conn, s.buyer, SOUTH, pid, str(qty // 1000 * 3 + 50), str(qty // 1000 * 4 + 100))
 
 
 def _easy_logins(conn) -> None:

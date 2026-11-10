@@ -12,7 +12,7 @@ It covers the whole path of a purchase:
 6. **Differences:** debit memos for shortages, claim stubs for damaged goods, item passes for excess.
 7. **Payments:** checks worked out from what the branches counted, then followed from printed to claimed to cleared, with cash flow.
 8. **Selling prices** and reports.
-9. **Inventory:** stock on hand at every branch and the warehouse, blind stock counts, approved adjustments and transfers. The Purchasing | Inventory switch at the top of the sidebar opens it.
+9. **Inventory:** stock on hand at every branch and the warehouse, blind stock counts, approved adjustments and transfers, sales (typed in or from a POS file) with gross profit, and reorder suggestions that become draft Order Forms. The Purchasing | Inventory switch at the top of the sidebar opens it.
 
 ## Start in 2 minutes
 
@@ -51,7 +51,7 @@ The full guide (every screen, the rules the system enforces, roles, backups and 
 
 ## Next up
 
-**Inventory, phase 2:** sales or POS capture, reorder points and costing methods. Phase 1 is in [apps/desktop/docs/inventory.md](apps/desktop/docs/inventory.md).
+**Inventory, phase 3:** moving-average costing, serial and lot tracking with expiry dates, unit conversions, and a POS screen. Phases 1 and 2 are in [apps/desktop/docs/inventory.md](apps/desktop/docs/inventory.md).
 
 **Web app and API (in progress):** a TypeScript API and a browser app on Supabase, alongside the desktop program. So far they cover sign-in, suppliers, and custom fields that admins can add without code changes. That custom-field groundwork is what later AI features (fields, forms and processes made from a prompt) will build on.
 

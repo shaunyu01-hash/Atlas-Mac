@@ -22,6 +22,7 @@ from .receiving_page import ReceivedPage, ReceivingPage
 from .selling_page import SellingPricesPage
 from .settings_page import SettingsPage
 from .inventory_page import AdjustmentsPage, CountsPage, InventoryReportsPage, StockPage, TransfersPage
+from .sales_page import ReorderPage, SalesPage
 
 
 class FirstRunDialog(QDialog):
@@ -317,7 +318,7 @@ class MainWindow(QMainWindow):
         self._name_theme_button()
 
     _INVENTORY_PAGES = {"inv_stock": StockPage, "inv_counts": CountsPage, "inv_adjust": AdjustmentsPage, "inv_transfers": TransfersPage,
-                        "inv_reports": InventoryReportsPage}
+                        "inv_sales": SalesPage, "inv_reorder": ReorderPage, "inv_reports": InventoryReportsPage}
 
     @staticmethod
     def _inventory_layout(user) -> list:
@@ -330,6 +331,10 @@ class MainWindow(QMainWindow):
         if user.can("transfer.send") or user.can("transfer.receive") or user.can("inventory.view"):
             stock.append(("Transfers", "receiving", "inv_transfers"))
         out = [(None, "Inventory", None)] + stock if stock else []
+        selling = ([("Sales", "tag", "inv_sales")] if user.can("sales.record") or user.can("inventory.view") else []) + (
+            [("Reorder", "order-form", "inv_reorder")] if user.can("inventory.view") else [])
+        if selling:
+            out += [(None, "Sales and reorder", None)] + selling
         if user.can("inventory.view"):
             out += [(None, "Reports", None), ("Inventory reports", "reports", "inv_reports")]
         return out

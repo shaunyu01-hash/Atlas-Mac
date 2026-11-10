@@ -99,7 +99,7 @@ def test_v27_database_upgrades_keeping_every_row(sample_file, env):
     db.initialize(c)
     assert c.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     after = _counts(c)
-    assert after.pop("audit_logs") == before.pop("audit_logs") + 2  # the MIGRATE_V28 and MIGRATE_V29 notes, nothing else
+    assert after.pop("audit_logs") == before.pop("audit_logs") + 3  # the MIGRATE_V28, V29 and V30 notes, nothing else
     assert after == before
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []

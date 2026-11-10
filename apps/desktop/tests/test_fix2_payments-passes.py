@@ -154,7 +154,7 @@ def test_v27_upgrade_keeps_every_row_and_adds_the_new_guards(sample_file, env):
     before = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
     db.initialize(c)
     after = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
-    assert after.pop("audit_logs") == before.pop("audit_logs") + 2  # the MIGRATE_V28 note, and V29's (inventory)
+    assert after.pop("audit_logs") == before.pop("audit_logs") + 3  # the MIGRATE_V28 note, and V29's and V30's (inventory)
     assert after == before
     assert set(NEW_TRIGGERS) <= {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
     assert set(NEW_TRIGGERS) <= set(schema.V28_TRIGGERS)

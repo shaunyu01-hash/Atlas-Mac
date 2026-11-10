@@ -91,3 +91,63 @@ python -E -m pytest tests/test_inventory.py -q -p no:cacheprovider
 - Location 0 is not a branch row. Don't join `stock_*.location_code` to `branches` without handling 0 (`place_name` does).
 - The count's `book_m` is a snapshot at start. Receiving goods at a place while it is being counted makes the posted difference wrong. The screen warns (`moved_since`), but nothing blocks it.
 - Not yet built (later phases): sales or POS capture, reorder points, costing methods other than last cost, serial or lot tracking, unit conversions.
+
+# Phase 2: sales, customer returns, reorder
+
+Sales take stock off the books the day they're recorded, so the books are right between counts and a count's difference is real loss. Reorder levels turn low stock into draft Order Forms, which closes the loop back to purchasing.
+
+## Files
+
+| File | Role | Key public API |
+|---|---|---|
+| `atlaspo/stock_sales.py` | Sales and returns, POS files, sales reports | `record`, `read_file`, `import_file`, `cancel`, `papers`, `paper_lines`, `list_price_c`, `sales_report`, `daily_sales`, `movers`, `shrinkage`, `value_by_department` |
+| `atlaspo/reorder.py` | Levels and suggested orders | `levels`, `set_levels`, `on_order`, `make_orders` |
+| `atlaspo/ui/sales_page.py` | Screens | `SalesPage` (+ `RecordSalesDialog`, `ImportSalesDialog`), `ReorderPage` (+ `LevelsDialog`, `ReorderSettingsDialog`), `SalesReportsWidget` (its tabs are moved into Inventory reports) |
+
+## Data model (V30)
+
+- `stock_sales`: one paper per place and day. `kind` is SALE or RETURN; `source` is ENTRY or IMPORT (with `file_name` and `file_sha256`); `status` is POSTED → CANCELLED. Header fields are fixed; cancelled stays cancelled; no delete. Numbers come from `sale_number_sequences(kind, year)`: `YYYY-SL-00001` for sales and `YYYY-RT-00001` for returns.
+- `stock_sale_lines`: `qty_m` in the stock unit; `price_c` (one unit) and `amount_c`; `cost_c` (piece cost then, may be NULL); `bucket` (sales GOOD; returns GOOD or DAMAGED). Append-only, and only while the paper is POSTED.
+- `reorder_levels(location_code, product_id, min_m, target_m, set_by, set_at)`: hand-set levels. Upsert or delete (back to the program's levels); every change is audited (`REORDER_LEVELS`).
+- Settings (in `DEFAULT_SETTINGS`): `inventory.sales_days` 60, `inventory.lead_days` 14, `inventory.cover_days` 14, `inventory.dead_days` 90.
+- `MOVES` gains SOLD (−qty GOOD) and CUSTOMER_RETURN (+qty into the chosen bucket) from POSTED papers. Their time is `MIN(sale_date 23:59:59, entered_at)`. `KINDS["COUNT"]` now reads "Stock count difference".
+
+## Rules
+
+| Permission | Roles |
+|---|---|
+| `sales.record` | ADMIN, BUYER, RECEIVER, WAREHOUSE (own place only, via `inventory.scope`) |
+| `reorder.edit` | ADMIN, BUYER |
+| Cancel sales | `stock.post` (ADMIN, APPROVER), with a reason |
+| Sales reports, Reorder page | `inventory.view` |
+| Make draft OFs | `of.edit` and `inventory.view` |
+
+1. **Price:** an amount typed (or from the file) sets the unit price; else a typed unit price; else the catalog price, `products.selling_c / pieces_per_unit`. The cost is a snapshot of `last_cost_c / pieces_per_unit`, so profit never changes later.
+2. **Dates** (`_check_date`): no future days, and nothing dated before the day a non-cancelled stock count started at that place, because the count already took those sales in. The count's own day is allowed.
+3. **POS files** (`read_file`): CSV (separator sniffed; UTF-8 or cp1252), with headings on line 1. It needs a SKU-like and a quantity-like column (`_SKU`, `_QTY`); amount or price columns are optional. Lines for the same SKU are added together. SKUs not in the catalog are listed (`unmatched`) and left out. The same file (sha256) can't be imported twice for a place. Files larger than 20 MB are refused.
+4. **Branch staff** never see cost or profit (`paper_lines` drops them without `inventory.view`).
+5. **Reorder levels** (`levels`): branches only (OFs deliver to branches).
+   - The minimum is average daily net sales over `sales_days`, times `lead_days`. The target adds `cover_days`. Hand-set levels win.
+   - *Have* = for sale + in transit + still due on APPROVED, ISSUED or PARTIAL POs (`on_order`, in pieces).
+   - Low when target > 0 and have < minimum. The need is target − have, rounded up to whole order units unless the UOM can be split and `pieces_per_unit` is 1.
+   - A row is orderable only with a supplier, a last cost and an active product.
+6. **Draft OFs** (`make_orders`): one `order_forms.create_draft` per supplier, each branch's units as `allocations_m`, cost = `last_cost_c`, the supplier's payment terms, and a remark saying it came from inventory (audit `REORDER_DRAFT`). They then go through normal approval.
+7. **Reports:** net sales by product or place with gross profit and margin; fast and slow movers (sold over `sales_days`, per day, days left, last sold, "not moving" after `dead_days` with stock); missing stock (posted COUNT movements: missing and over, valued); stock value by department.
+
+Audit actions: `SALES_RECORD`, `SALES_RETURN`, `SALES_CANCEL`, `REORDER_LEVELS`, `REORDER_DRAFT`.
+
+## Screens
+
+- **Sales** (Inventory sidebar, "Sales and reorder"): tabs Sales, Customer returns, Cancelled and All; place and date filters; net total. Buttons: Record sales, Customer return, Import POS file (preview with matched and unmatched lines), and Cancel these sales (management).
+- **Reorder:** low products (or every product), with an editable Order (units) column. "Set levels" sets or clears hand levels. "Make draft Order Forms" uses the selected rows when more than one is selected, otherwise every orderable low row. "How levels are worked out" (Admin) edits the four day settings.
+- **Inventory reports** gains the tabs Sales, Fast and slow, Missing stock and By department.
+
+## Tests
+
+`tests/test_inventory_sales.py` (13 tests). The sample data adds a week of typed sales at every branch, a damaged customer return, and two hand-set levels at South that put lines on the reorder list.
+
+## Gotchas
+
+- The rule against selling before a count's start day is what stops double counting. Keep it if dates or counts change.
+- `reorder.levels` reads `inventory.on_hand`, which needs `inventory.view`, so the Reorder page is office only.
+- `SalesReportsWidget` hands its tab pages to `InventoryReportsPage`. It stays alive as `InventoryReportsPage.sales` to refresh them.

@@ -13,6 +13,10 @@ from conftest import NORTH, PASSWORD, SOUTH
 
 @pytest.fixture
 def w(world):
+    return make_world(world)
+
+
+def make_world(world):
     """Socks (10 at North, 4 at South) and a 3-piece Tee pack (2 packs at North), issued. Two receivers per branch, an approver."""
     conn = world.conn
     conn.execute("UPDATE system_settings SET value = '' WHERE key = 'inventory.live_since'")
@@ -284,7 +288,7 @@ def test_the_switch_opens_inventory_and_goes_back_to_purchasing(w, app):
     window.show_system("inventory")
     assert window.inv_nav.isVisibleTo(window) and not window.nav.isVisibleTo(window)
     assert window.inv_switch.isChecked() and not window.po_switch.isChecked()
-    assert _entries(window) == ["Stock on hand", "Stock counts", "Adjustments", "Transfers", "Inventory reports"]
+    assert _entries(window) == ["Stock on hand", "Stock counts", "Adjustments", "Transfers", "Sales", "Reorder", "Inventory reports"]
     for row in window._inv_names:
         window.inv_nav.setCurrentRow(row)
         assert window.stack.currentWidget() is window._built(window._inv_names[row])
@@ -296,10 +300,10 @@ def test_the_switch_opens_inventory_and_goes_back_to_purchasing(w, app):
     assert window.nav.isVisibleTo(window) and window.po_switch.isChecked() and not window.inv_switch.isChecked()
 
 
-def test_receivers_get_only_counting_adjustments_and_transfers(w, app):
+def test_receivers_get_only_counting_adjustments_transfers_and_sales(w, app):
     from atlaspo.ui.main_window import MainWindow
     window = MainWindow(w.conn, w.r1)
-    assert _entries(window) == ["Stock counts", "Adjustments", "Transfers"]
+    assert _entries(window) == ["Stock counts", "Adjustments", "Transfers", "Sales"]
     window.show_system("inventory")
     counts = window._built("inv_counts")
     assert counts.lines.columnCount() == 6  # their own figures only, never the books

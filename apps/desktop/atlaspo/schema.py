@@ -22,7 +22,7 @@ Issued documents keep what they printed.
 
 import re
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 DDL = """
 CREATE TABLE departments (
@@ -355,6 +355,13 @@ DEFAULT_SETTINGS = {
     "approval.basis": "OF_TOTAL",
     "backup.folder": "",
     "backup.keep_days": "30",
+    # Reorder levels the program works out: average daily sales over the last sales_days, times the days a delivery takes (lead_days),
+    # for the minimum, plus the days the stock should last after it arrives (cover_days), for the target.
+    "inventory.sales_days": "60",
+    "inventory.lead_days": "14",
+    "inventory.cover_days": "14",
+    # Stock with no sale in this many days is listed as not moving.
+    "inventory.dead_days": "90",
 }
 
 
@@ -2111,4 +2118,87 @@ INSERT OR IGNORE INTO system_settings(key, value, updated_at) VALUES ('inventory
 INSERT INTO audit_logs(occurred_at, user_name, action, entity_type, summary)
 VALUES (datetime('now','localtime'), 'system', 'MIGRATE_V29', 'system', 'Inventory: stock on hand, stock counts, adjustments and transfers.');
 PRAGMA user_version = 29;
+"""
+
+
+# ------------------------------------------------------------------ version 30: sales, customer returns and reorder levels
+
+# Sales take stock off the books the day they are recorded, typed in or imported from a POS file. Like everything else in inventory,
+# the books read these papers directly. Reorder levels set by hand override the ones the program works out from sales.
+MIGRATE_V30 = """
+CREATE TABLE IF NOT EXISTS sale_number_sequences (
+    kind TEXT NOT NULL CHECK (kind IN ('SALE','RETURN')),
+    year INTEGER NOT NULL,
+    last_number INTEGER NOT NULL CHECK (last_number >= 1),
+    PRIMARY KEY (kind, year)
+);
+CREATE TRIGGER IF NOT EXISTS sale_sequence_never_backward BEFORE UPDATE ON sale_number_sequences
+WHEN NEW.last_number <= OLD.last_number OR NEW.kind IS NOT OLD.kind OR NEW.year IS NOT OLD.year
+BEGIN SELECT RAISE(ABORT, 'Sales numbers cannot be reused'); END;
+CREATE TRIGGER IF NOT EXISTS sale_sequence_no_delete BEFORE DELETE ON sale_number_sequences
+BEGIN SELECT RAISE(ABORT, 'Sales number history cannot be deleted'); END;
+
+-- One paper per branch, day and source: what was sold, or what customers brought back. Quantities are in each product's stock unit.
+CREATE TABLE IF NOT EXISTS stock_sales (
+    id INTEGER PRIMARY KEY,
+    sale_number TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('SALE','RETURN')),
+    location_code INTEGER NOT NULL CHECK (location_code >= 0),
+    sale_date TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('ENTRY','IMPORT')),
+    file_name TEXT NOT NULL DEFAULT '',
+    file_sha256 TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('POSTED','CANCELLED')),
+    entered_by INTEGER NOT NULL REFERENCES users(id),
+    entered_at TEXT NOT NULL,
+    cancelled_by INTEGER REFERENCES users(id),
+    cancelled_at TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_stock_sales_place ON stock_sales(location_code, sale_date);
+CREATE INDEX IF NOT EXISTS idx_stock_sales_file ON stock_sales(file_sha256);
+CREATE TRIGGER IF NOT EXISTS stock_sale_fixed BEFORE UPDATE OF sale_number, kind, location_code, sale_date, source, file_name, file_sha256, note, entered_by, entered_at ON stock_sales
+BEGIN SELECT RAISE(ABORT, 'Recorded sales cannot change. Cancel them and record them again'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sale_stays_cancelled BEFORE UPDATE OF status ON stock_sales
+WHEN OLD.status <> 'POSTED'
+BEGIN SELECT RAISE(ABORT, 'Cancelled sales stay cancelled'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sale_no_delete BEFORE DELETE ON stock_sales
+BEGIN SELECT RAISE(ABORT, 'Recorded sales cannot be deleted. Cancel them instead'); END;
+
+-- price_c is what one stock unit sold for, cost_c what it cost then (last purchase cost), both kept as they were on the day.
+CREATE TABLE IF NOT EXISTS stock_sale_lines (
+    sale_id INTEGER NOT NULL REFERENCES stock_sales(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    bucket TEXT NOT NULL DEFAULT 'GOOD' CHECK (bucket IN ('GOOD','DAMAGED')),
+    qty_m INTEGER NOT NULL CHECK (qty_m > 0),
+    price_c INTEGER NOT NULL CHECK (price_c >= 0),
+    amount_c INTEGER NOT NULL CHECK (amount_c >= 0),
+    cost_c INTEGER CHECK (cost_c >= 0),
+    PRIMARY KEY (sale_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_sale_lines_product ON stock_sale_lines(product_id);
+CREATE TRIGGER IF NOT EXISTS stock_sale_lines_no_update BEFORE UPDATE ON stock_sale_lines
+BEGIN SELECT RAISE(ABORT, 'Recorded sales cannot change. Cancel them and record them again'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sale_lines_no_delete BEFORE DELETE ON stock_sale_lines
+BEGIN SELECT RAISE(ABORT, 'Recorded sales cannot change. Cancel them and record them again'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sale_lines_while_posted BEFORE INSERT ON stock_sale_lines
+WHEN (SELECT status FROM stock_sales WHERE id = NEW.sale_id) IS NOT 'POSTED'
+BEGIN SELECT RAISE(ABORT, 'Recorded sales cannot change. Cancel them and record them again'); END;
+
+-- Levels set by hand for one product at one branch. Without a row, the program works them out from recent sales.
+CREATE TABLE IF NOT EXISTS reorder_levels (
+    location_code INTEGER NOT NULL CHECK (location_code >= 0),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    min_m INTEGER NOT NULL CHECK (min_m >= 0),
+    target_m INTEGER NOT NULL,
+    set_by INTEGER NOT NULL REFERENCES users(id),
+    set_at TEXT NOT NULL,
+    PRIMARY KEY (location_code, product_id),
+    CHECK (target_m >= min_m)
+);
+
+INSERT INTO audit_logs(occurred_at, user_name, action, entity_type, summary)
+VALUES (datetime('now','localtime'), 'system', 'MIGRATE_V30', 'system', 'Inventory: sales and customer returns, and reorder levels.');
+PRAGMA user_version = 30;
 """

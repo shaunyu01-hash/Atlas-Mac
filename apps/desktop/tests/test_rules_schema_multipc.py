@@ -52,6 +52,7 @@ def _v27(path: Path):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(schema, "MIGRATE_V28", "PRAGMA user_version = 27;")
         mp.setattr(schema, "MIGRATE_V29", "PRAGMA user_version = 27;")
+        mp.setattr(schema, "MIGRATE_V30", "PRAGMA user_version = 27;")
         mp.setattr(schema, "V28_COLUMNS", {})
         conn = db.connect(path)
         db.initialize(conn)
@@ -147,7 +148,7 @@ def test_a_v27_file_upgrades_keeping_every_row_and_fills_the_new_columns_from_th
     for table, before in u["rows"].items():
         after = [dict(r) for r in c.execute(f"SELECT * FROM {table} ORDER BY rowid")]
         if table == "audit_logs":
-            assert after[:len(before)] == before and [r["action"] for r in after[len(before):]] == ["MIGRATE_V28", "MIGRATE_V29"]
+            assert after[:len(before)] == before and [r["action"] for r in after[len(before):]] == ["MIGRATE_V28", "MIGRATE_V29", "MIGRATE_V30"]
             continue
         for r in after:
             r.pop(NEW_COLUMNS.get(table, ""), None)

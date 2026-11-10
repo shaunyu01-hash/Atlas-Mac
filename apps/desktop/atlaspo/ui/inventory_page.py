@@ -36,8 +36,9 @@ def _qty(qty_m, unit: str = "") -> str:
     return "" if qty_m is None else fmt_qty(qty_m)
 
 
-def _editable(table: QTableWidget, col: int) -> None:
-    """Only the figure column takes typing; every other cell is read-only."""
+def _editable(table: QTableWidget, col) -> None:
+    """Only the figure columns take typing; every other cell is read-only."""
+    cols = {col} if isinstance(col, int) else set(col)
     table.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
     for r in range(table.rowCount()):
         for c in range(table.columnCount()):
@@ -46,7 +47,7 @@ def _editable(table: QTableWidget, col: int) -> None:
                 item = QTableWidgetItem("")
                 table.setItem(r, c, item)
             flags = item.flags()
-            item.setFlags(flags | Qt.ItemFlag.ItemIsEditable if c == col else flags & ~Qt.ItemFlag.ItemIsEditable)
+            item.setFlags(flags | Qt.ItemFlag.ItemIsEditable if c in cols else flags & ~Qt.ItemFlag.ItemIsEditable)
 
 
 def _typed(table: QTableWidget, col: int) -> dict:
@@ -62,9 +63,9 @@ def _typed(table: QTableWidget, col: int) -> dict:
 class ProductLines(QWidget):
     """Lines of products with a quantity each: find a product by SKU or words, add it, type the quantity."""
 
-    def __init__(self, conn, qty_heading: str = "Quantity", parent=None):
+    def __init__(self, conn, qty_heading: str = "Quantity", extra: str | None = None, parent=None):
         super().__init__(parent)
-        self.conn = conn
+        self.conn, self.extra = conn, extra
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
         row = QHBoxLayout()
@@ -76,8 +77,8 @@ class ProductLines(QWidget):
         row.addWidget(self.add_btn)
         row.addWidget(button("Remove line", self.remove, lock=False))
         col.addLayout(row)
-        self.table = make_table(["SKU", "Product", "Size", "Color", "Unit", qty_heading], numeric=(5,), stretch=1)
-        set_widths(self.table, {0: 110, 2: 70, 3: 80, 4: 60, 5: 90})
+        self.table = make_table(["SKU", "Product", "Size", "Color", "Unit", qty_heading] + ([extra] if extra else []), numeric=(5, 6) if extra else (5,), stretch=1)
+        set_widths(self.table, {0: 110, 2: 70, 3: 80, 4: 60, 5: 90, 6: 150} if extra else {0: 110, 2: 70, 3: 80, 4: 60, 5: 90})
         self.table.setSortingEnabled(False)
         col.addWidget(self.table, 1)
 
@@ -105,14 +106,14 @@ class ProductLines(QWidget):
                 return
         r = self.table.rowCount()
         self.table.insertRow(r)
-        for c, text in enumerate([p["item_code"], p["description"], p["size"], p["color"], p["unit"], ""]):
+        for c, text in enumerate([p["item_code"], p["description"], p["size"], p["color"], p["unit"], ""] + ([""] if self.extra else [])):
             item = QTableWidgetItem(text)
             if c == 0:
                 item.setData(Qt.ItemDataRole.UserRole, p["id"])
-            if c == 5:
+            if c >= 5:
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(r, c, item)
-        _editable(self.table, 5)
+        _editable(self.table, (5, 6) if self.extra else 5)
         self.find.clear()
         self.table.setCurrentCell(r, 5)
         self.table.editItem(self.table.item(r, 5))
@@ -124,6 +125,9 @@ class ProductLines(QWidget):
 
     def values(self) -> dict[int, str]:
         return _typed(self.table, 5)
+
+    def extras(self) -> dict[int, str]:
+        return _typed(self.table, 6) if self.extra else {}
 
 
 class _Dialog(QDialog):
@@ -378,7 +382,7 @@ class CountsPage(QWidget):
                                      "" if l["diff_m"] is None else f"{'+' if l['diff_m'] > 0 else ''}{fmt_qty(l['diff_m'])}",
                                      "" if l["diff_value_c"] is None or l["diff_m"] is None else fmt_peso(l["diff_value_c"]), l["counts"]] for l in res["lines"]])
             text = {service.COUNTING: f"Round {r['round_no']}: " + (f"{len(r['counted_this_round'])} of 2 people have counted." if r["counted_this_round"] else "waiting for two people to count."),
-                    service.AGREED: f"Both counts agree. Posting moves the books: {fmt_peso(res['short_value_c'])} sold or missing, {fmt_peso(res['over_value_c'])} more than the books.",
+                    service.AGREED: f"Both counts agree. Posting moves the books: {fmt_peso(res['short_value_c'])} missing, {fmt_peso(res['over_value_c'])} more than the books.",
                     service.POSTED: f"Posted by {r['closed_name']}, {fmt_datetime(r['closed_at'])}.",
                     service.CANCELLED: f"Cancelled by {r['closed_name']}: {r['cancel_reason']}"}[r["status"]]
             if r["status"] in (service.COUNTING, service.AGREED) and res["moved_since"]:
@@ -752,7 +756,7 @@ class InventoryReportsPage(QWidget):
         self.move_place.currentIndexChanged.connect(self.refresh)
         bar.addStretch(1)
         ml.addLayout(bar)
-        ml.addWidget(label("Negative stock count lines are what was sold or went missing since the count before", "Muted"))
+        ml.addWidget(label("Negative stock count differences are what went missing, or was sold without being recorded", "Muted"))
         self.move_table = make_table(["What happened", "Stock", "In", "Out", "Value", "Products"], numeric=(2, 3, 4, 5), stretch=0)
         ml.addWidget(self.move_table)
         tabs.addTab(moves, "Movements")
@@ -763,6 +767,15 @@ class InventoryReportsPage(QWidget):
         self.lost_table = make_table(["Place", "PO number", "SKU", "Product", "Size", "Color", "Quantity", "Last moved"], numeric=(6,), stretch=3)
         ll.addWidget(self.lost_table)
         tabs.addTab(lost, "Not in the catalog")
+        # Sales, fast and slow movers, missing stock and value by department come from the sales screens' module.
+        from .sales_page import SalesReportsWidget
+        self.sales = SalesReportsWidget(conn, user)
+        for _ in range(self.sales.count()):
+            text = self.sales.tabText(0)
+            page = self.sales.widget(0)
+            self.sales.removeTab(0)
+            tabs.insertTab(tabs.count(), page, text)
+        tabs.setCurrentIndex(0)
         self.refresh()
 
     def refresh(self, *_):
@@ -773,6 +786,8 @@ class InventoryReportsPage(QWidget):
         moves = service.movement_summary(self.conn, self.user, date_value(self.date_from) or "0000", date_value(self.date_to) or "9999", combo_value(self.move_place))
         fill_table(self.move_table, [[m["kind_label"], {"GOOD": "For sale", "DAMAGED": "Damaged", "HELD": "Held"}[m["bucket"]], fmt_qty(m["in_m"]), fmt_qty(m["out_m"]),
                                       fmt_peso(m["value_c"]), m["products"]] for m in moves])
+        if hasattr(self, "sales"):
+            self.sales.refresh()
         lost = service.not_in_catalog(self.conn, self.user)
         fill_table(self.lost_table, [[r["location_name"], r["po_number"], r["item_code"], r["description"], r["size"], r["color"], fmt_qty(r["qty_m"]), fmt_datetime(r["last_at"])]
                                      for r in lost])

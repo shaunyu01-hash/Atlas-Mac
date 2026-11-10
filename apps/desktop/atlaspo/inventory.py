@@ -13,7 +13,8 @@ Rules:
   supplier to collect it. Goods on the way (item passes printed, transfers sent) are shown as in transit at the place they're going to.
 - Orders first received before inventory.live_since stay out of the books, with everything that follows from them. The first stock count
   at each place sets its opening stock.
-- Nothing records a sale yet. Stock counts find what was sold or went missing: a posted count moves the books to what was counted.
+- Sales and customer returns (stock_sales.py) take stock off and put it back the day they're recorded. A posted stock count moves the
+  books to what was counted, so its difference is what went missing, or was sold without being recorded.
 - Stock may go below zero (sold before the delivery was counted, say). It is flagged, never blocked.
 - Stock counts are blind and double, like receiving: two people count without seeing the books or each other's figures. Lines they agree on
   are fixed; the rest are counted again by two people. Management posts the agreed count.
@@ -50,7 +51,7 @@ TRANSFER_LABELS = {SENT: "On the way", RECEIVED: "Received", CANCELLED: "Cancell
 KINDS = {"RECEIVED": "Delivery received", "DAMAGE_FOUND": "Damage found later", "CS_SENT": "Damaged goods sent back",
          "CS_ARRIVED": "Claim stub goods arrived", "IP_SENT": "Excess sent back", "IP_ARRIVED": "Item pass goods arrived",
          "COLLECTED": "Collected by supplier", "FORFEITED": "Forfeited, for sale", "RETURNED": "Returned to supplier",
-         "WRITTEN_OFF": "Written off on a debit memo", "COUNT": "Stock count", "ADJUSTMENT": "Adjustment",
+         "WRITTEN_OFF": "Written off on a debit memo", "SOLD": "Sold", "CUSTOMER_RETURN": "Customer return", "COUNT": "Stock count difference", "ADJUSTMENT": "Adjustment",
          "TRANSFER_OUT": "Transfer sent", "TRANSFER_IN": "Transfer received", "TRANSFER_BACK": "Transfer cancelled"}
 
 MAX_QTY_M = 10**12
@@ -215,6 +216,10 @@ moves({_COLS}) AS (
     SELECT dm.prepared_at, po.branch_code, {_product_of('di.po_item_id')}, 'DAMAGED', -di.pieces_m, 'WRITTEN_OFF', dm.dm_number, po.id, di.po_item_id
       FROM debit_memos dm JOIN debit_memo_items di ON di.dm_id = dm.id JOIN purchase_orders po ON po.id = dm.po_id
      WHERE dm.status = 'ISSUED' AND di.reason = 'DAMAGED' AND {_LIVE}
+    UNION ALL
+    SELECT MIN(s.sale_date || ' 23:59:59', s.entered_at), s.location_code, l.product_id, l.bucket,
+           CASE s.kind WHEN 'SALE' THEN -l.qty_m ELSE l.qty_m END, CASE s.kind WHEN 'SALE' THEN 'SOLD' ELSE 'CUSTOMER_RETURN' END, s.sale_number, NULL, NULL
+      FROM stock_sales s JOIN stock_sale_lines l ON l.sale_id = s.id WHERE s.status = 'POSTED'
     UNION ALL
     SELECT m.moved_at, m.location_code, m.product_id, m.bucket, m.qty_m, m.kind,
            CASE WHEN m.kind = 'COUNT' THEN (SELECT count_number FROM stock_counts WHERE id = m.ref_id)
@@ -580,7 +585,7 @@ def post_count(conn, user: User, count_id: int) -> int:
         short = sum(-d[3] for d in diffs if d[3] < 0)
         over = sum(d[3] for d in diffs if d[3] > 0)
         audit(conn, user, "STOCK_COUNT_POST", "stock_count", count_id,
-              summary=f"{count['count_number']} posted: {len(diffs)} products changed, {fmt_qty(short)} sold or missing, {fmt_qty(over)} more than the books")
+              summary=f"{count['count_number']} posted: {len(diffs)} products changed, {fmt_qty(short)} missing, {fmt_qty(over)} more than the books")
     return len(diffs)
 
 
