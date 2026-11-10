@@ -92,6 +92,8 @@ Then record that context is current for this commit. The pre-push hook reads thi
 git rev-parse HEAD > "$(git rev-parse --git-dir)/update-context-head"
 ```
 
+Run this as its own command, not chained with the push: the hook checks the file before the whole command runs, so `record && git push` is still blocked.
+
 Record it even when no doc needed changing; that is a valid outcome of this skill. Record it only after the docs commit, never before, and never without doing steps 1–3: the hook trusts this file.
 
 ## 6. Report
