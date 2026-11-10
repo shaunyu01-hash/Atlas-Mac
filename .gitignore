@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Built program: rebuild it with Build EXE.cmd
+po_app/dist/
+po_app/build/
+*.spec
+
+# The program's own live database
+po_app/**/*.sqlite
+po_app/**/*.sqlite-journal
+
+# Test agents: throwaway databases, logs and reports
+agents/runs/
+agents/reports/*
+!agents/reports/.gitkeep
+agents/.env
