@@ -133,10 +133,10 @@ def test_v27_upgrade_keeps_every_row_and_adds_the_round_3_guards(sample_file, en
     empty = {t: c.execute(f"SELECT COUNT(*) FROM {t} WHERE {col} IS NULL").fetchone()[0] for t, col in filled.items()}
     logs = c.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
     db.initialize(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION == 28
+    assert c.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     assert {t: rows(t) for t in tables if t != "audit_logs"} == before
     assert all(c.execute(f"SELECT COUNT(*) FROM {t} WHERE {col} IS NULL").fetchone()[0] <= empty[t] for t, col in filled.items())
-    assert c.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == logs + 1
+    assert c.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0] == logs + 2  # the MIGRATE_V28 note, and V29's (inventory)
     assert set(NEW_TRIGGERS) <= set(schema.V28_TRIGGERS) <= {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
     assert c.execute("PRAGMA foreign_key_check").fetchall() == [] and c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     c.close()

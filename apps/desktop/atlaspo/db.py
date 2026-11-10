@@ -304,6 +304,8 @@ def _upgrade(conn: sqlite3.Connection, version: int) -> None:
         _migrate(conn, schema.MIGRATE_V27)
     if version < 28:
         _migrate(conn, schema.MIGRATE_V28, lambda c: _missing_columns(c, schema.V28_COLUMNS))
+    if version < 29:
+        _migrate(conn, schema.MIGRATE_V29)
 
 
 _fresh_columns: dict[int, dict[str, list[str]]] = {}

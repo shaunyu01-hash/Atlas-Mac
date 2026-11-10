@@ -51,6 +51,7 @@ def _v27(path: Path):
     """A real version-27 file: made by this program with version 28 left out, so it has no V28 guards, no new columns and no MIGRATE_V28 note."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(schema, "MIGRATE_V28", "PRAGMA user_version = 27;")
+        mp.setattr(schema, "MIGRATE_V29", "PRAGMA user_version = 27;")
         mp.setattr(schema, "V28_COLUMNS", {})
         conn = db.connect(path)
         db.initialize(conn)
@@ -138,7 +139,7 @@ def upgraded(env, monkeypatch):
 
 def test_a_v27_file_upgrades_keeping_every_row_and_fills_the_new_columns_from_the_record(upgraded):
     c, u = upgraded["conn"], upgraded
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert c.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     for table, column in NEW_COLUMNS.items():
         assert column in _columns(c, table)
     assert set(schema.V28_TRIGGERS) <= _triggers(c) and db._shape_problem(c) == ""
@@ -146,10 +147,12 @@ def test_a_v27_file_upgrades_keeping_every_row_and_fills_the_new_columns_from_th
     for table, before in u["rows"].items():
         after = [dict(r) for r in c.execute(f"SELECT * FROM {table} ORDER BY rowid")]
         if table == "audit_logs":
-            assert after[:len(before)] == before and [r["action"] for r in after[len(before):]] == ["MIGRATE_V28"]
+            assert after[:len(before)] == before and [r["action"] for r in after[len(before):]] == ["MIGRATE_V28", "MIGRATE_V29"]
             continue
         for r in after:
             r.pop(NEW_COLUMNS.get(table, ""), None)
+        if table == "system_settings":  # V29 adds the day inventory starts counting from
+            after = [r for r in after if r["key"] != "inventory.live_since"]
         assert after == before, table
     # What the program worked out comes from each check's own record line. A check with no line stays empty.
     expected = dict(c.execute("SELECT check_number, expected_c FROM payment_checks").fetchall())
@@ -256,7 +259,7 @@ def test_two_pcs_upgrading_at_once_make_one_upgrade(env, monkeypatch):
         t.join(120)
     assert errors == []
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     assert conn.execute("SELECT COUNT(*) FROM audit_logs WHERE action = 'MIGRATE_V28'").fetchone()[0] == 1
     assert set(NEW_TRIGGERS) <= _triggers(conn) and db._shape_problem(conn) == ""
     conn.close()

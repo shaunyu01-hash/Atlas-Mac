@@ -22,7 +22,7 @@ Issued documents keep what they printed.
 
 import re
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 DDL = """
 CREATE TABLE departments (
@@ -1933,3 +1933,182 @@ PRAGMA user_version = 28;
 V28_TRIGGERS = tuple(line.split()[5] for line in MIGRATE_V28.splitlines() if line.startswith("CREATE TRIGGER IF NOT EXISTS "))
 # The same guards as statements, so a later table rebuild on a file already at version 28 or newer can put them back itself.
 V28_TRIGGER_SQL = "".join(m.group(0) + "\n" for m in re.finditer(r"^CREATE TRIGGER IF NOT EXISTS .*?\bEND;", MIGRATE_V28, re.S | re.M))
+
+
+# ------------------------------------------------------------------ version 29: inventory, phase 1
+
+# Stock that purchasing moves (agreed branch counts, claim stubs, item passes, forfeits) is read from the purchasing records themselves,
+# so these tables hold only what inventory makes on its own: stock counts, adjustments and transfers. Location 0 is the Central Warehouse;
+# any other location is a branch code. Every movement is permanent: a mistake is put right with another movement, never an edit.
+MIGRATE_V29 = """
+CREATE TABLE IF NOT EXISTS stock_number_sequences (
+    kind TEXT NOT NULL CHECK (kind IN ('SC','SA','ST')),
+    year INTEGER NOT NULL,
+    last_number INTEGER NOT NULL CHECK (last_number >= 1),
+    PRIMARY KEY (kind, year)
+);
+CREATE TRIGGER IF NOT EXISTS stock_sequence_never_backward BEFORE UPDATE ON stock_number_sequences
+WHEN NEW.last_number <= OLD.last_number OR NEW.kind IS NOT OLD.kind OR NEW.year IS NOT OLD.year
+BEGIN SELECT RAISE(ABORT, 'Inventory numbers cannot be reused'); END;
+CREATE TRIGGER IF NOT EXISTS stock_sequence_no_delete BEFORE DELETE ON stock_number_sequences
+BEGIN SELECT RAISE(ABORT, 'Inventory number history cannot be deleted'); END;
+
+CREATE TABLE IF NOT EXISTS stock_movements (
+    id INTEGER PRIMARY KEY,
+    location_code INTEGER NOT NULL CHECK (location_code >= 0),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    bucket TEXT NOT NULL CHECK (bucket IN ('GOOD','DAMAGED')),
+    qty_m INTEGER NOT NULL CHECK (qty_m <> 0),
+    kind TEXT NOT NULL CHECK (kind IN ('COUNT','ADJUSTMENT','TRANSFER_OUT','TRANSFER_IN','TRANSFER_BACK')),
+    ref_id INTEGER NOT NULL,
+    moved_by INTEGER NOT NULL REFERENCES users(id),
+    moved_at TEXT NOT NULL,
+    UNIQUE (kind, ref_id, location_code, product_id, bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_place ON stock_movements(location_code, product_id);
+CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements(product_id);
+CREATE TRIGGER IF NOT EXISTS stock_movements_no_update BEFORE UPDATE ON stock_movements
+BEGIN SELECT RAISE(ABORT, 'A stock movement is permanent. Put it right with another one'); END;
+CREATE TRIGGER IF NOT EXISTS stock_movements_no_delete BEFORE DELETE ON stock_movements
+BEGIN SELECT RAISE(ABORT, 'A stock movement is permanent. Put it right with another one'); END;
+
+CREATE TABLE IF NOT EXISTS stock_counts (
+    id INTEGER PRIMARY KEY,
+    count_number TEXT NOT NULL UNIQUE,
+    location_code INTEGER NOT NULL CHECK (location_code >= 0),
+    department_id INTEGER REFERENCES departments(id),
+    status TEXT NOT NULL CHECK (status IN ('COUNTING','AGREED','POSTED','CANCELLED')),
+    note TEXT NOT NULL DEFAULT '',
+    opened_by INTEGER NOT NULL REFERENCES users(id),
+    opened_at TEXT NOT NULL,
+    closed_by INTEGER REFERENCES users(id),
+    closed_at TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_stock_counts_place ON stock_counts(location_code, status);
+CREATE TRIGGER IF NOT EXISTS stock_count_fixed BEFORE UPDATE OF count_number, location_code, department_id, note, opened_by, opened_at ON stock_counts
+BEGIN SELECT RAISE(ABORT, 'A stock count cannot change. Cancel it and start another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_status_path BEFORE UPDATE OF status ON stock_counts
+WHEN NOT ((OLD.status = 'COUNTING' AND NEW.status IN ('AGREED','CANCELLED')) OR (OLD.status = 'AGREED' AND NEW.status IN ('POSTED','CANCELLED')))
+BEGIN SELECT RAISE(ABORT, 'A finished stock count stays as it is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_no_delete BEFORE DELETE ON stock_counts
+BEGIN SELECT RAISE(ABORT, 'A stock count cannot be deleted. Cancel it instead'); END;
+
+-- One row per product on the count. book_m is the good stock on the books when the count started; agreed_m is set once two people agree.
+CREATE TABLE IF NOT EXISTS stock_count_lines (
+    count_id INTEGER NOT NULL REFERENCES stock_counts(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    book_m INTEGER NOT NULL,
+    agreed_m INTEGER CHECK (agreed_m >= 0),
+    added_by INTEGER REFERENCES users(id),
+    PRIMARY KEY (count_id, product_id)
+);
+CREATE TRIGGER IF NOT EXISTS stock_count_lines_fixed BEFORE UPDATE ON stock_count_lines
+WHEN OLD.agreed_m IS NOT NULL OR NEW.count_id IS NOT OLD.count_id OR NEW.product_id IS NOT OLD.product_id OR NEW.book_m IS NOT OLD.book_m OR NEW.added_by IS NOT OLD.added_by
+BEGIN SELECT RAISE(ABORT, 'An agreed count is permanent'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_lines_no_delete BEFORE DELETE ON stock_count_lines
+BEGIN SELECT RAISE(ABORT, 'An agreed count is permanent'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_lines_while_counting BEFORE INSERT ON stock_count_lines
+WHEN (SELECT status FROM stock_counts WHERE id = NEW.count_id) IS NOT 'COUNTING'
+BEGIN SELECT RAISE(ABORT, 'This stock count is finished'); END;
+
+-- What each person counted, round by round. Never changed.
+CREATE TABLE IF NOT EXISTS stock_count_entries (
+    count_id INTEGER NOT NULL REFERENCES stock_counts(id),
+    round_no INTEGER NOT NULL CHECK (round_no >= 1),
+    counted_by INTEGER NOT NULL REFERENCES users(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    qty_m INTEGER NOT NULL CHECK (qty_m >= 0),
+    counted_at TEXT NOT NULL,
+    PRIMARY KEY (count_id, round_no, counted_by, product_id)
+);
+CREATE TRIGGER IF NOT EXISTS stock_count_entries_no_update BEFORE UPDATE ON stock_count_entries
+BEGIN SELECT RAISE(ABORT, 'A count is permanent. Count again instead'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_entries_no_delete BEFORE DELETE ON stock_count_entries
+BEGIN SELECT RAISE(ABORT, 'A count is permanent. Count again instead'); END;
+CREATE TRIGGER IF NOT EXISTS stock_count_entries_while_counting BEFORE INSERT ON stock_count_entries
+WHEN (SELECT status FROM stock_counts WHERE id = NEW.count_id) IS NOT 'COUNTING'
+BEGIN SELECT RAISE(ABORT, 'This stock count is finished'); END;
+
+CREATE TABLE IF NOT EXISTS stock_adjustments (
+    id INTEGER PRIMARY KEY,
+    adj_number TEXT NOT NULL UNIQUE,
+    location_code INTEGER NOT NULL CHECK (location_code >= 0),
+    reason TEXT NOT NULL CHECK (reason IN ('WRITE_OFF','DAMAGED','FOUND','INTERNAL_USE','RETURNED','OTHER')),
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('PENDING','APPROVED','REJECTED')),
+    prepared_by INTEGER NOT NULL REFERENCES users(id),
+    prepared_at TEXT NOT NULL,
+    decided_by INTEGER REFERENCES users(id),
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT '',
+    CHECK (decided_by IS NULL OR decided_by <> prepared_by)
+);
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_fixed BEFORE UPDATE OF adj_number, location_code, reason, note, prepared_by, prepared_at ON stock_adjustments
+BEGIN SELECT RAISE(ABORT, 'An adjustment cannot change. Reject it and make another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_decided_stays BEFORE UPDATE OF status ON stock_adjustments
+WHEN OLD.status <> 'PENDING'
+BEGIN SELECT RAISE(ABORT, 'A decided adjustment stays as it is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_no_delete BEFORE DELETE ON stock_adjustments
+BEGIN SELECT RAISE(ABORT, 'An adjustment cannot be deleted. Reject it instead'); END;
+CREATE TABLE IF NOT EXISTS stock_adjustment_lines (
+    adj_id INTEGER NOT NULL REFERENCES stock_adjustments(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    bucket TEXT NOT NULL CHECK (bucket IN ('GOOD','DAMAGED')),
+    qty_m INTEGER NOT NULL CHECK (qty_m <> 0),
+    PRIMARY KEY (adj_id, product_id, bucket)
+);
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_lines_no_update BEFORE UPDATE ON stock_adjustment_lines
+BEGIN SELECT RAISE(ABORT, 'An adjustment cannot change. Reject it and make another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_lines_no_delete BEFORE DELETE ON stock_adjustment_lines
+BEGIN SELECT RAISE(ABORT, 'An adjustment cannot change. Reject it and make another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_adjustment_lines_while_pending BEFORE INSERT ON stock_adjustment_lines
+WHEN (SELECT status FROM stock_adjustments WHERE id = NEW.adj_id) IS NOT 'PENDING'
+BEGIN SELECT RAISE(ABORT, 'An adjustment cannot change. Reject it and make another'); END;
+
+CREATE TABLE IF NOT EXISTS stock_transfers (
+    id INTEGER PRIMARY KEY,
+    transfer_number TEXT NOT NULL UNIQUE,
+    from_code INTEGER NOT NULL CHECK (from_code >= 0),
+    to_code INTEGER NOT NULL CHECK (to_code >= 0),
+    status TEXT NOT NULL CHECK (status IN ('SENT','RECEIVED','CANCELLED')),
+    note TEXT NOT NULL DEFAULT '',
+    sent_by INTEGER NOT NULL REFERENCES users(id),
+    sent_at TEXT NOT NULL,
+    closed_by INTEGER REFERENCES users(id),
+    closed_at TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    CHECK (from_code <> to_code),
+    CHECK (closed_by IS NULL OR status <> 'RECEIVED' OR closed_by <> sent_by)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_transfers_status ON stock_transfers(status);
+CREATE TRIGGER IF NOT EXISTS stock_transfer_fixed BEFORE UPDATE OF transfer_number, from_code, to_code, note, sent_by, sent_at ON stock_transfers
+BEGIN SELECT RAISE(ABORT, 'A transfer cannot change. Cancel it and send another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfer_finished_stays BEFORE UPDATE OF status ON stock_transfers
+WHEN OLD.status <> 'SENT'
+BEGIN SELECT RAISE(ABORT, 'A finished transfer stays as it is'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfer_no_delete BEFORE DELETE ON stock_transfers
+BEGIN SELECT RAISE(ABORT, 'A transfer cannot be deleted. Cancel it instead'); END;
+CREATE TABLE IF NOT EXISTS stock_transfer_lines (
+    transfer_id INTEGER NOT NULL REFERENCES stock_transfers(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    sent_m INTEGER NOT NULL CHECK (sent_m > 0),
+    received_m INTEGER CHECK (received_m >= 0),
+    PRIMARY KEY (transfer_id, product_id)
+);
+CREATE TRIGGER IF NOT EXISTS stock_transfer_lines_fixed BEFORE UPDATE ON stock_transfer_lines
+WHEN OLD.received_m IS NOT NULL OR NEW.transfer_id IS NOT OLD.transfer_id OR NEW.product_id IS NOT OLD.product_id OR NEW.sent_m IS NOT OLD.sent_m
+BEGIN SELECT RAISE(ABORT, 'A transfer cannot change. Cancel it and send another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfer_lines_no_delete BEFORE DELETE ON stock_transfer_lines
+BEGIN SELECT RAISE(ABORT, 'A transfer cannot change. Cancel it and send another'); END;
+CREATE TRIGGER IF NOT EXISTS stock_transfer_lines_while_sent BEFORE INSERT ON stock_transfer_lines
+WHEN (SELECT status FROM stock_transfers WHERE id = NEW.transfer_id) IS NOT 'SENT'
+  OR EXISTS (SELECT 1 FROM stock_movements WHERE kind = 'TRANSFER_OUT' AND ref_id = NEW.transfer_id)
+BEGIN SELECT RAISE(ABORT, 'A transfer cannot change. Cancel it and send another'); END;
+
+-- Purchasing history before this day is left out of the books. The first stock count at each place gives its opening stock.
+INSERT OR IGNORE INTO system_settings(key, value, updated_at) VALUES ('inventory.live_since', date('now','localtime'), datetime('now','localtime'));
+INSERT INTO audit_logs(occurred_at, user_name, action, entity_type, summary)
+VALUES (datetime('now','localtime'), 'system', 'MIGRATE_V29', 'system', 'Inventory: stock on hand, stock counts, adjustments and transfers.');
+PRAGMA user_version = 29;
+"""

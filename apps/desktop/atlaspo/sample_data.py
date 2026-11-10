@@ -364,6 +364,7 @@ def build(conn) -> None:
         db.set_settings(conn, s.admin, {"approval.approver_user_ids": f"{owner_user.id},{s.approver.id}", "approval.allow_self_approval": "1"})
         _receiving(s)
         _other_suppliers(s)
+        _inventory(s, owner_user)
         _easy_logins(conn)
         backup.manual_backup(conn, s.admin)
 
@@ -386,6 +387,32 @@ def _other_suppliers(s: _Seed) -> None:
         orders.issue(s.conn, s.buyer, po["id"])
     s.approved((2026, 10, 27), "CCC", [s.line("C001", four), s.line("C003", two)], expected_delivery_date="2026-11-30")
     s.draft((2026, 10, 30), "CCC", [s.line("C004", {NORTH: 20})], remarks="Still checking the color with Company C.")
+
+
+def _inventory(s: _Seed, owner_user) -> None:
+    """Every sample order counts toward stock. North had a stock count, posted, that found what was sold; East is being counted now, with one
+    count in. An adjustment waits for approval, and a transfer from North to South is on the way."""
+    from . import inventory
+    conn = s.conn
+    conn.execute("UPDATE system_settings SET value = '' WHERE key = 'inventory.live_since'")
+    _at(2026, 11, 3, 9)
+    north = inventory.open_count(conn, s.buyer, NORTH, note="Monthly count")
+    sheet = inventory.count_sheet(conn, s.people[NORTH][0], north)["lines"]
+    # Roughly a third of each product was sold since it arrived.
+    figures = {line["product_id"]: str(int(inventory.book(conn, NORTH)[line["product_id"]] * 2 // 3 // 1000)) for line in sheet}
+    for who in s.people[NORTH]:
+        inventory.save_count(conn, who, north, figures)
+    _at(2026, 11, 3, 16)
+    inventory.post_count(conn, s.approver, north)
+    _at(2026, 11, 4, 9)
+    east = inventory.open_count(conn, s.buyer, EAST)
+    sheet = inventory.count_sheet(conn, s.people[EAST][0], east)["lines"]
+    inventory.save_count(conn, s.people[EAST][0], east, {line["product_id"]: "5" for line in sheet})
+    stock = sorted(inventory.book(conn, NORTH).items())
+    if stock:
+        pid, qty = stock[0]
+        inventory.prepare_adjustment(conn, s.people[NORTH][0], NORTH, "DAMAGED", [{"product_id": pid, "qty": "1"}], "Water damage in the stock room")
+        inventory.send_transfer(conn, s.buyer, NORTH, SOUTH, {pid: str(max(qty // 1000 // 4, 1))}, "South ran out")
 
 
 def _easy_logins(conn) -> None:

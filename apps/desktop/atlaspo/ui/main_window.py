@@ -21,6 +21,7 @@ from .po_page import POPage
 from .receiving_page import ReceivedPage, ReceivingPage
 from .selling_page import SellingPricesPage
 from .settings_page import SettingsPage
+from .inventory_page import AdjustmentsPage, CountsPage, InventoryReportsPage, StockPage, TransfersPage
 
 
 class FirstRunDialog(QDialog):
@@ -158,10 +159,35 @@ class MainWindow(QMainWindow):
         words = QVBoxLayout()
         words.setSpacing(0)
         words.addWidget(label("Atlas PO ERP", "Brand"))
-        words.addWidget(label("Purchasing, sample data" if sample else "Purchasing", "BrandSub"))
+        self.brand_sub = label("Purchasing, sample data" if sample else "Purchasing", "BrandSub")
+        self.sample = sample
+        words.addWidget(self.brand_sub)
         brand_row.addLayout(words)
         brand_row.addStretch(1)
         col.addLayout(brand_row)
+        # Purchasing and Inventory are two systems in one program: this switch swaps the whole sidebar and the screen.
+        self.inventory_entries = self._inventory_layout(user)
+        self.system = "po"
+        self.po_switch = button("Purchasing", lambda: self.show_system("po"), "Count", lock=False)
+        self.inv_switch = button("Inventory", lambda: self.show_system("inventory"), "Count", lock=False)
+        switch = QHBoxLayout()
+        switch.setSpacing(4)
+        # Low, so every sidebar entry still fits a maximised window on a 1366 x 768 laptop.
+        switch.setContentsMargins(6, 0, 6, 0)
+        for b in (self.po_switch, self.inv_switch):
+            b.setCheckable(True)
+            b.setFixedHeight(22)
+            switch.addWidget(b)
+        self.po_switch.setChecked(True)
+        if self.inventory_entries:
+            col.addLayout(switch)
+            # The switch already says which system is open, so the line under the name only says when it's sample data. That room keeps the sidebar on a laptop screen.
+            self.brand_sub.setText("Sample data")
+            self.brand_sub.setVisible(sample)
+            mark.setPixmap(app_icon().pixmap(QSize(24, 24)))
+        else:
+            self.po_switch.hide()
+            self.inv_switch.hide()
         self.nav = QListWidget()
         self.nav.setObjectName("Nav")
         self.nav.setIconSize(QSize(18, 18))
@@ -169,6 +195,13 @@ class MainWindow(QMainWindow):
         # Group headings sit in shorter rows (NAV_HEAD), so their space above is trimmed to keep the words whole. Colours still come from the theme.
         self.nav.setStyleSheet("QListWidget#Nav::item:disabled { padding: 4px 10px 0px 10px; }")
         col.addWidget(self.nav, 1)
+        self.inv_nav = QListWidget()
+        self.inv_nav.setObjectName("Nav")
+        self.inv_nav.setIconSize(QSize(18, 18))
+        self.inv_nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.inv_nav.setStyleSheet("QListWidget#Nav::item:disabled { padding: 4px 10px 0px 10px; }")
+        self.inv_nav.hide()
+        col.addWidget(self.inv_nav, 1)
         # Admin is told while nobody can receive at the Central Warehouse, so stubs, passes and deliveries don't sit there unrecorded.
         # One short line so the sidebar still fits a laptop screen; the full advice is on hover.
         self.warehouse_warning = label("No Warehouse login yet", "Error")
@@ -211,7 +244,8 @@ class MainWindow(QMainWindow):
                      "claim_stubs": ClaimStubsPage if can_review else None, "item_passes": ItemPassesPage if can_review else None,
                      "payments": PaymentsPage if user.can("payment.view") else None, "central": CentralWarehousePage if can_review else None,
                      "suppliers": SuppliersPage, "products": ProductsPage, "branches": BranchesPage, "reports": ReportsPage,
-                     "of_page": OFPage, "po_page": POPage, "settings": SettingsPage if user.can("settings.edit") else None}
+                     "of_page": OFPage, "po_page": POPage, "settings": SettingsPage if user.can("settings.edit") else None,
+                     **{name: cls for name, cls in self._INVENTORY_PAGES.items() if any(e[2] == name for e in self.inventory_entries)}}
         for name, cls in factories.items():
             if cls is None:
                 setattr(self, name, None)
@@ -265,8 +299,76 @@ class MainWindow(QMainWindow):
         self.nav.itemClicked.connect(self._nav_clicked)
         self.new_shortcut = QShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self.new_of)
         self.nav.setCurrentRow(min(self._nav_names))
+        self._inv_names, self.inv_glyphs = {}, {}
+        for text, glyph, name in self.inventory_entries:
+            if text is None:
+                head = QListWidgetItem(glyph)
+                head.setFlags(Qt.ItemFlag.NoItemFlags)
+                head.setSizeHint(QSize(0, self.NAV_HEAD))
+                self.inv_nav.addItem(head)
+                continue
+            entry = QListWidgetItem(icon(glyph), text)
+            entry.setSizeHint(QSize(0, self.NAV_ROW))
+            self.inv_nav.addItem(entry)
+            self._inv_names[self.inv_nav.count() - 1] = name
+            self.inv_glyphs[self.inv_nav.count() - 1] = glyph
+        self.inv_nav.currentRowChanged.connect(self._inv_navigate)
         self._update_counts()
         self._name_theme_button()
+
+    _INVENTORY_PAGES = {"inv_stock": StockPage, "inv_counts": CountsPage, "inv_adjust": AdjustmentsPage, "inv_transfers": TransfersPage,
+                        "inv_reports": InventoryReportsPage}
+
+    @staticmethod
+    def _inventory_layout(user) -> list:
+        """(text, icon, page) for the Inventory sidebar, with (None, heading, None) for a heading. Empty when the person has no part in inventory."""
+        stock = [("Stock on hand", "catalog", "inv_stock")] if user.can("inventory.view") else []
+        if user.can("count.manage") or user.can("stock.count") or user.can("stock.post"):
+            stock.append(("Stock counts", "approvals", "inv_counts"))
+        if user.can("adjust.prepare") or user.can("stock.post") or user.can("inventory.view"):
+            stock.append(("Adjustments", "debit", "inv_adjust"))
+        if user.can("transfer.send") or user.can("transfer.receive") or user.can("inventory.view"):
+            stock.append(("Transfers", "receiving", "inv_transfers"))
+        out = [(None, "Inventory", None)] + stock if stock else []
+        if user.can("inventory.view"):
+            out += [(None, "Reports", None), ("Inventory reports", "reports", "inv_reports")]
+        return out
+
+    def show_system(self, system: str):
+        """Purchasing or Inventory: the sidebar and the screen change together. An unsaved Order Form or PO asks first."""
+        if system == self.system or (system == "inventory" and not self.inventory_entries) or (system == "inventory" and not self._leave_document()):
+            self.po_switch.setChecked(self.system == "po")
+            self.inv_switch.setChecked(self.system == "inventory")
+            return
+        self.system = system
+        inventory = system == "inventory"
+        self.po_switch.setChecked(not inventory)
+        self.inv_switch.setChecked(inventory)
+        self.nav.setVisible(not inventory)
+        self.inv_nav.setVisible(inventory)
+        if inventory:
+            row = self.inv_nav.currentRow()
+            if row in self._inv_names:
+                self._inv_navigate(row)
+            else:
+                self.inv_nav.setCurrentRow(min(self._inv_names))
+        else:
+            self._skip_leave_check = True
+            try:
+                self._navigate(self.nav.currentRow())
+            finally:
+                self._skip_leave_check = False
+        self._update_counts()
+
+    def _inv_navigate(self, row: int):
+        name = self._inv_names.get(row)
+        if name is None:
+            return
+        page, fresh = self._page(name)
+        if not fresh and hasattr(page, "refresh"):
+            page.refresh()
+        self._stale.discard(page)
+        self.stack.setCurrentWidget(page)
 
     NAV_ROW = 26  # With NAV_HEAD, low enough that every sidebar entry fits a maximised window on a 1366 x 768 laptop without scrolling.
     NAV_HEAD = 20 # Group headings, such as Purchasing, are a little shorter than the entries.
@@ -337,6 +439,8 @@ class MainWindow(QMainWindow):
                  "debit_memos": ("received",), "claim_stubs": ("received",), "item_passes": ("received",), "central": ("received",)}
         for target in links.get(name, ()):
             page.changed.connect(lambda *_, t=target: self._call_built(t, "refresh"))
+        if name in self._INVENTORY_PAGES:
+            page.changed.connect(self._update_counts)
         if name == "payments" and "received" in self._factories:
             page.changed.connect(self.refresh_all)
 
@@ -468,6 +572,12 @@ class MainWindow(QMainWindow):
     def _update_counts(self):
         """The warehouse warning and the counts beside the sidebar entries. Read straight from the data, so no page has to be built for them."""
         self.warehouse_warning.setVisible(self.user.can("users.edit") and auth.warehouse_login_missing(self.conn))
+        # Adjustments waiting for management, beside the Inventory sidebar entry.
+        adjust_row = next((r for r, n in self.__dict__.get("_inv_names", {}).items() if n == "inv_adjust"), None)
+        if adjust_row is not None and self.user.can("stock.post"):
+            from .. import inventory as inventory_service
+            n = inventory_service.adjustments_waiting(self.conn, self.user)
+            self.inv_nav.item(adjust_row).setText(f"Adjustments  ({n})" if n else "Adjustments")
         # Whoever signs off sees how many wait for them, without clicking through rows.
         # Damage the branches reported waits for Accounting or management.
         if self.claims_row is not None and self.user.can("cs.approve_request"):
@@ -502,6 +612,8 @@ class MainWindow(QMainWindow):
         self._name_theme_button()
         for row, glyph in self.nav_glyphs.items():
             self.nav.item(row).setIcon(icon(glyph))
+        for row, glyph in self.inv_glyphs.items():
+            self.inv_nav.item(row).setIcon(icon(glyph))
         # A page built later takes the new colours as it's built.
         self._call_built("of_page", "retheme")
         self._call_built("orders_page", "refresh")

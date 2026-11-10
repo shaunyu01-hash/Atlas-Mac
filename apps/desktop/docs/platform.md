@@ -1,7 +1,7 @@
 # Platform: database, schema, auth, money, backup
 
 Everything the business services stand on. One SQLite file (`po.sqlite` in the data folder) opened in autocommit mode, with every
-write wrapped in `db.tx()` (`BEGIN IMMEDIATE`). The schema is version 1 DDL plus migrations `MIGRATE_V2` to `MIGRATE_V28`, run by one
+write wrapped in `db.tx()` (`BEGIN IMMEDIATE`). The schema is version 1 DDL plus migrations `MIGRATE_V2` to `MIGRATE_V29`, run by one
 runner for new and old files alike. Many rules live in the database as triggers (append-only tables, permanent numbers, locked
 documents, status paths), so a service can't break them even by mistake. `auth` holds the role/permission map and the login rules,
 `money` does all arithmetic in `Decimal` and returns whole centavos, `backup` makes checked copies, restores safely and runs the
@@ -12,7 +12,7 @@ health check. The file may sit on a network share used by several PCs at once, w
 | File | Role | Key public names |
 |---|---|---|
 | `atlaspo/db.py` | Connection, transactions, data folder, migration runner, audit, settings | `POError`, `PermissionDenied`, `DatabaseBusy`, `DataFolderUnreachable`, `now/timestamp/today`, `data_dir`, `db_path`, `pointer_folder`, `connect`, `tx`, `initialize`, `open_database`, `audit`, `get_setting`, `set_settings`, `BUSY_TIMEOUT_MS` |
-| `atlaspo/schema.py` | All DDL, seed data, migrations | `SCHEMA_VERSION` (28), `DDL`, `DEPARTMENTS`, `DESTINATIONS`, `DEFAULT_SETTINGS`, `MIGRATE_V2..V28`, `SUPPLIER_TERM_COLUMNS`, `V28_COLUMNS`, `V28_TRIGGERS`, `V28_TRIGGER_SQL` |
+| `atlaspo/schema.py` | All DDL, seed data, migrations | `SCHEMA_VERSION` (29), `DDL`, `DEPARTMENTS`, `DESTINATIONS`, `DEFAULT_SETTINGS`, `MIGRATE_V2..V29`, `SUPPLIER_TERM_COLUMNS`, `V28_COLUMNS`, `V28_TRIGGERS`, `V28_TRIGGER_SQL` |
 | `atlaspo/auth.py` | Users, passwords, roles, permissions, person chips | `ROLES`, `PERMISSIONS`, `User`, `require`, `login`, `create_first_admin`, `create_user`, `update_user`, `reset_password`, `change_own_password`, `role_conflict`, `list_users`, `chips`, `get_user`, `has_users`, `warehouse_login_missing`, `job_line` |
 | `atlaspo/money.py` | Pure arithmetic, parsing, formatting | `round_centavos`, `parse_*`, `fmt_*`, `compute_line`, `compute_totals`, `compute_order`, `split_by_weight`, `requires_approval`, `selling_from_cost`, ... |
 | `atlaspo/backup.py` | Backups, restore, health check | `backup_folder`, `manual_backup`, `auto_backup`, `list_backups`, `restore`, `integrity_report`, `attachments_zip` |
@@ -91,6 +91,7 @@ Final tables (v28), grouped. `_c` centavos, `_bp` basis points, `_m` thousandths
 | 26 | `late_damage`. |
 | 27 | `claim_requests`, `claim_request_items`. |
 | 28 | Columns `payment_checks.expected_c`, `payment_differences.dr_lower_c`, `debit_memos.paid_back_check_id` (backfilled), `dr_line_differences`, ~40 guards (status paths, no lines after finish), index cleanup. |
+| 29 | Inventory: `stock_movements`, `stock_counts`/`_lines`/`_entries`, `stock_adjustments`/`_lines`, `stock_transfers`/`_lines`, `stock_number_sequences`, setting `inventory.live_since`. See [inventory.md](inventory.md). |
 
 **Adding a migration (V29)**
 1. In `schema.py`, add `MIGRATE_V29 = """..."""` ending with an `INSERT INTO audit_logs(... 'MIGRATE_V29' ...)` row and `PRAGMA user_version = 29;` (the runner reads the target from that line; without it the script runs every time).

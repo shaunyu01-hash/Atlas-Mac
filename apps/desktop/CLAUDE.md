@@ -9,7 +9,7 @@ PySide6 desktop program over one SQLite file. It is complete, it is in productio
 ```
 atlaspo/            services: pure business logic, no Qt
   db.py             connect, tx(), audit(), settings, data folder, migration runner
-  schema.py         every table, trigger and migration (MIGRATE_V2 … MIGRATE_V28), plus SCHEMA_VERSION
+  schema.py         every table, trigger and migration (MIGRATE_V2 … MIGRATE_V29), plus SCHEMA_VERSION
   auth.py           users, ROLES, PERMISSIONS map, require(user, perm)
   money.py          all arithmetic: Decimal in, whole centavos out
   order_forms.py    OF lifecycle: draft → approval → numbering → PO generation, amendments
@@ -19,6 +19,7 @@ atlaspo/            services: pure business logic, no Qt
   debit_memos.py · claim_stubs.py · item_passes.py   shortages · damaged goods · excess goods
   delivery_receipts.py · payments.py · selling.py    DRs · checks and cash flow · selling prices
   masters.py        suppliers, branches, products
+  inventory.py      stock on hand (read from purchasing records), stock counts, adjustments, transfers
   pdf.py · reports.py · backup.py · sample_data.py
   ui/               screens only; they call services and never touch SQL rules
 tests/              pytest, about 1,090 tests; conftest.py has the World fixture (a small business)
@@ -40,6 +41,7 @@ Before changing a feature, read its doc in [docs/](docs/). Each one covers files
 | Payments, checks, cash flow, selling prices | [docs/payments.md](docs/payments.md) | `payments.py`, `selling.py`, `ui/payments_page.py`, `ui/selling_page.py` |
 | Platform: database, schema and migrations, roles and permissions, money, backup | [docs/platform.md](docs/platform.md) | `db.py`, `schema.py`, `auth.py`, `money.py`, `backup.py` |
 | Master data, printed papers, reports, sample data | [docs/masters-pdf-reports.md](docs/masters-pdf-reports.md) | `masters.py`, `pdf.py`, `reports.py`, `sample_data.py` |
+| Inventory: stock on hand, stock counts, adjustments, transfers, the Purchasing / Inventory switch | [docs/inventory.md](docs/inventory.md) | `inventory.py`, `ui/inventory_page.py` |
 | UI shell: main window, navigation, shared widgets, theme, settings | [docs/ui-shell.md](docs/ui-shell.md) | `ui/main_window.py`, `ui/common.py`, `ui/pages.py`, `ui/theme.py`, `ui/settings_page.py` |
 
 When you change a feature, update its doc in the same branch. The `/update-context` skill does this before every push or PR.

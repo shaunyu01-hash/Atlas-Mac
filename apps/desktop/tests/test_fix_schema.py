@@ -97,9 +97,9 @@ def test_v27_database_upgrades_keeping_every_row(sample_file, env):
     before = _counts(c)
     assert c.execute("PRAGMA user_version").fetchone()[0] == 27
     db.initialize(c)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert c.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     after = _counts(c)
-    assert after.pop("audit_logs") == before.pop("audit_logs") + 1  # the MIGRATE_V28 note, nothing else
+    assert after.pop("audit_logs") == before.pop("audit_logs") + 2  # the MIGRATE_V28 and MIGRATE_V29 notes, nothing else
     assert after == before
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -110,7 +110,7 @@ def test_v27_database_upgrades_keeping_every_row(sample_file, env):
     assert list((env / "backups").glob("po-before-migration-v27-*.sqlite"))
     c.close()
     again = db.open_database(path)
-    assert again.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert again.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     again.close()
 
 
@@ -168,7 +168,7 @@ def test_a_later_table_rebuild_keeps_every_v28_guard(sample):
 
 def test_open_runs_the_planner_figures_and_never_fails_for_them(env, monkeypatch):
     conn = db.open_database()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 28
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == schema.SCHEMA_VERSION
     calls = []
     real = db._optimize
     monkeypatch.setattr(db, "_optimize", lambda c: calls.append(1) or real(c))

@@ -55,6 +55,17 @@ PERMISSIONS = {
     "payment.signoff": {"ADMIN", "APPROVER"},
     # Damage a branch reports after its count: Accounting or management approves it, as they print the claim stubs.
     "cs.approve_request": {"ADMIN", "APPROVER", "ACCOUNTING"},
+    # Inventory. The books, costs and stock values are for the office. Receivers and the warehouse count stock blind, so they never see them.
+    "inventory.view": {"ADMIN", "BUYER", "APPROVER", "VIEWER", "ACCOUNTING"},
+    # Starting and cancelling a stock count, and reading its results.
+    "count.manage": {"ADMIN", "BUYER", "APPROVER"},
+    # Only the people at the place count its stock, blind, two of them.
+    "stock.count": {"RECEIVER", "WAREHOUSE"},
+    # Posting a count, approving an adjustment and cancelling a transfer change the books, so they're management's.
+    "stock.post": {"ADMIN", "APPROVER"},
+    "adjust.prepare": {"ADMIN", "BUYER", "RECEIVER", "WAREHOUSE"},
+    "transfer.send": {"ADMIN", "BUYER", "RECEIVER", "WAREHOUSE"},
+    "transfer.receive": {"ADMIN", "RECEIVER", "WAREHOUSE"},
 }
 
 _N, _R, _P = 2**14, 8, 1
