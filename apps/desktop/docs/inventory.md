@@ -271,9 +271,8 @@ Six role agents (branch receiver, warehouse, purchaser, management, accounting, 
 - Papers must be inserted in their first state and close with who and when:
   - counts COUNTING, adjustments PENDING, transfers SENT, sales POSTED;
   - an AGREED count needs every line agreed by two people;
-  - only RECEIVER or WAREHOUSE users write count entries;
-  - sale lines go only on the newest paper (sales: GOOD only);
-  - only ADMIN or APPROVER decide holds.
+  - sale lines go only on the newest paper (sales: GOOD only).
+- Who may count, and who decides holds, is checked by the services (`require`), not by triggers: older migrations rebuild `user_roles`, and a V31 trigger that read it broke every upgrade from before then.
 
 ## Known, not changed
 

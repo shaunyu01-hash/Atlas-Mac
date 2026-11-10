@@ -44,7 +44,7 @@ The sidebar is built once in `MainWindow.__init__` (`main_window.py:205-269`). `
 
 ACCOUNTING with another role (e.g. APPROVER) falls into the full layout. Seeing a page does not mean being able to act: buttons are hidden per permission inside each page (`show_if`), and every service still calls `auth.require`.
 
-Not in the sidebar: `of_page` (`OFPage`) and `po_page` (`POPage`) are opened via `open_of(id)` / `open_po(id)` signals, and leave via their `closed` signal (`_back_from_document`). `Ctrl+Shift+N` → `new_of` (ignored for limited roles or without `of.edit`).
+Not in the sidebar: `of_page` (`OFPage`) and `po_page` (`POPage`) are opened via `open_of(id)` / `open_po(id)` signals, and leave via their `closed` signal (`_back_from_document`). `Ctrl+Shift+N` → `new_of` (ignored for limited roles or without `of.edit`). `new_of`, `open_of` and `open_po` call `_purchasing_sidebar` first, so opening one from the Inventory system switches the sidebar back to Purchasing. The Purchasing | Inventory switch (`show_system`) and the Inventory sidebar (`inv_nav`, `_inv_clicked` reopens the highlighted entry) are described in [inventory.md](inventory.md).
 
 **Registry and lazy building.** `MainWindow.__getattr__` builds a page on first access (`win.received` builds it); `_page(name)` calls `cls(self.conn, self.user)`, wires it (`_wire`), and adds it to the stack. `_built(name)` returns a page only if it already exists. `win.pages` / `win.nav_rows` build every page (tests use them). `_fit_to` gives every off-screen page an `Ignored` size policy so one wide page does not hold the window wide.
 

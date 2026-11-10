@@ -46,6 +46,8 @@ In Claude Code, from the repo root:
 
 > Run the scenario in agents/scenarios/happy-path.md with the agents.
 
+`scenarios/inventory-forensic.md` is different: each role agent builds its own sample database, works its inventory tasks, tries to break its own rules and checks every result in the database. Run it with: "Run the inventory forensic scenario with the role agents and the auditor."
+
 The main Claude session coordinates: it creates `agents/runs/<run-id>/`, sets `PO_DATA_DIR` and `PO_SAMPLE_DIR` to folders inside it, sets up the users in that database, hands each step to the right agent, then runs the auditor.
 
 ## Folders
