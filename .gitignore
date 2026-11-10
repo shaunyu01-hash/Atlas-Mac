@@ -4,16 +4,25 @@ __pycache__/
 .pytest_cache/
 
 # Built program: rebuild it with Build EXE.cmd
-po_app/dist/
-po_app/build/
+apps/desktop/dist/
+apps/desktop/build/
 *.spec
 
 # The program's own live database
-po_app/**/*.sqlite
-po_app/**/*.sqlite-journal
+apps/desktop/**/*.sqlite
+apps/desktop/**/*.sqlite-journal
 
 # Test agents: throwaway databases, logs and reports
 agents/runs/
 agents/reports/*
 !agents/reports/.gitkeep
 agents/.env
+
+# TypeScript workspace
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example

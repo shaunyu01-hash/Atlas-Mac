@@ -1,6 +1,6 @@
 # Atlas PO ERP agents
 
-AI agents for the Atlas PO ERP purchasing program (`po_app/`, PySide6 + SQLite), made for a business with a central warehouse and several branches. Some play each role in that business and run the program from start to finish in a throwaway database; others review the code; one supervises the whole and guards changes.
+AI agents for the Atlas PO ERP purchasing program (`apps/desktop/`, PySide6 + SQLite), made for a business with a central warehouse and several branches. Some play each role in that business and run the program from start to finish in a throwaway database; others review the code; one supervises the whole and guards changes.
 
 The agent definitions are in `.claude/agents/`. Claude Code finds them there. Each file states what the application does, its architecture in brief, the business rules in force, the agent's responsibilities and tables, which modules it may inspect, whom it works with, and what it must never change without the owner. How they work together, who owns which files, and the change protocol are in [COORDINATION.md](COORDINATION.md).
 

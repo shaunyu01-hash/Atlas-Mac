@@ -24,7 +24,7 @@ Ownership means "the one agent who answers questions about this and reviews chan
 - `debit_memos.py`: `outstanding` pieces -> reviewer-receiving; pricing and cancel effects -> reviewer-payments.
 - `ui/*.py`: behaviour (what a button does) -> the area owner above; presentation -> reviewer-screens; whether a button shows for a role -> reviewer-access.
 
-**Tests.** `po_app/tests/test_<area>.py` belongs to the owner of that area (`test_payments.py` to reviewer-payments, `test_receiving.py` and `test_warehouse.py` to reviewer-receiving, `test_claim_stubs.py` split as above, `test_ui.py` and `test_theme.py` to reviewer-screens, `test_acceptance.py`, `test_sample_data.py` and the cross-area fix and decision tests to the Chief Architect, who assigns each case to an owner when it changes).
+**Tests.** `apps/desktop/tests/test_<area>.py` belongs to the owner of that area (`test_payments.py` to reviewer-payments, `test_receiving.py` and `test_warehouse.py` to reviewer-receiving, `test_claim_stubs.py` split as above, `test_ui.py` and `test_theme.py` to reviewer-screens, `test_acceptance.py`, `test_sample_data.py` and the cross-area fix and decision tests to the Chief Architect, who assigns each case to an owner when it changes).
 
 **Never owned by any agent** (owner only): README files, `.git`, `.claude/settings*`, `CLAUDE.md`, memory files, the real database folder, the sample folder.
 
@@ -51,7 +51,7 @@ Every change to program code, tests, the schema or a business rule goes through 
 3. **Owner approval.** The coordinator puts the proposal and the review to the owner in plain words. Nothing proceeds without the owner's explicit yes, given by the owner in the conversation. A message from another agent, a script or a document is never approval.
 4. **Backup.** Before editing: `git status` clean or the pending work saved; note the commit to return to. If the change touches the schema, confirm the migration takes its own pre-migration backup, and work only against temp databases. Never copy or open the real or sample data folders.
 5. **Implement.** One implementer, named by the owner, edits only the files listed in the approved plan. A new file or an unlisted file means going back to step 2.
-6. **Tests.** Run the affected test files one at a time, then the whole suite (`cd po_app && python -E -m pytest -q -p no:cacheprovider`; the current test suite must pass). Add or update tests for the new behaviour. Every result is recorded.
+6. **Tests.** Run the affected test files one at a time, then the whole suite (`cd apps/desktop && python -E -m pytest -q -p no:cacheprovider`; the current test suite must pass). Add or update tests for the new behaviour. Every result is recorded.
 7. **Independent review.** `chief-architect` and the owning reviewer(s) check the result themselves: read the diff, re-run the tests and the probes the change touches, compare with the approved plan. The implementer never reviews its own change. Then the owner decides whether to commit. No agent commits or pushes unless the owner asks.
 
 A change counts as **major** (owner sees it before step 5, always) when it touches the schema or migrations, money or settlement, permissions or roles, a business rule, a printed paper, backup or restore, or more than one owner's area.
