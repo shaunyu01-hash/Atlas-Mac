@@ -32,6 +32,7 @@ Double-click **Atlas PO ERP (Sample Data)** on the desktop to practise on a sepa
 - **Receiving:** two receivers per branch, `nor1` and `nor2` for North, `sou1` and `sou2` for South, `eas1` and `eas2` for East, `wes1` and `wes2` for West. Received shows deliveries that are complete, with damaged pieces, short, over, split in two, missing a product, recounted, not matching after two rounds, and waiting for a second count. A few printed POs are left uncounted to practise on.
 - **Selling prices:** a few are changed by hand, so you can see them beside the automatic ones.
 - **`.exe`:** `Build EXE.cmd` builds its own, `Atlas PO ERP (Sample Data).exe`, using the same practice folder.
+- **Mac:** the program runs on a Mac too, sample data included. See [mac/README.md](mac/README.md) for the Mac app and presenting.
 
 ## First use
 

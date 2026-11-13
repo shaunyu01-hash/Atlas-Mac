@@ -170,7 +170,7 @@ Other tests also touch these modules: `test_delivery_receipts.py`, `test_fix_of_
 - **Kept PDFs are evidence.** Never re-render an issued PO, DM, CS or IP to reprint it. Fetch the kept bytes and `stamp_copy` them. A change to a renderer affects only future documents.
 - **Count and record a print in one `tx`.** Otherwise two PCs can both get the original. `db.tx` joins an outer transaction, with no savepoint. `debit_memos.document` counts `earlier` **before** opening its `tx`, unlike `claim_stubs.document`, so it may be exposed to that race.
 - **The pypdf pin stays below 7.** See the pypdf pin above.
-- **Fonts.** On a PC without Segoe UI or Arial, PDFs print "PHP" instead of ₱, and that changes layout widths.
+- **Fonts.** `pdf._fonts()` takes the first pair in `_FONT_FILES` (Windows Segoe UI or Arial, Mac Arial, Linux DejaVu Sans) whose regular and bold both have ₱ (U+20B1). With none, PDFs print "PHP" instead of ₱ in Helvetica, and that changes layout widths.
 - **Reports have no `require()`.** Adding a report exposes costs to every role that sees the sidebar group. Adding a count column titled "Code", "Dept" or "Draft OF #" leaves it out of the totals. Any other title gets summed.
 - **Master records are never deleted.** Branch and department deletion is blocked by triggers. Suppliers and products have no delete in code. Deactivate them instead.
 - **Supplier code format.** `save_supplier` caps codes at 4 characters (`[A-Z0-9]{1,4}`). Other code, such as file names and labels, prints the code. Grep for `supplier_code` before widening it.

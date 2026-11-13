@@ -69,6 +69,7 @@ def issue(conn, user: User, po_id: int) -> None:
 - The whole suite takes 12 to 25 minutes, so run it only for a finished change. Run it in the background.
 - Sample program: `python -E "Atlas PO ERP (Sample Data).pyw"` (login `owner` / `123`). Real program: `python -E "Atlas PO ERP.pyw"`.
 - Build the exe: `Build EXE.cmd`.
+- Mac: `bash mac/build_mac.sh` on a Mac builds both `.app`s and zips in `dist/mac`; `.github/workflows/mac-app.yml` does it on GitHub for Apple silicon and Intel. `mac/Start Atlas PO (Sample Data).command` runs the sample from source. Presenter guide: [mac/README.md](mac/README.md).
 
 ## Gotchas
 
@@ -77,3 +78,4 @@ def issue(conn, user: User, po_id: int) -> None:
 - `pypdf` is pinned below 7. Version 7 breaks `pdf.stamp_copy` (reprint stamping).
 - Two screen-width tests, `test_fix3::…_at_1366` and `test_fix_dm_ip::…debit_memo_date…`, fail on some machines because of fonts and DPI. They fail on the original code too, so they don't mean your change broke something.
 - Screen tests need a `QApplication`. Never open a dialog that waits for a click.
+- The program also runs on a Mac. Open files with `common.open_path`, never `os.startfile` (Windows-only); font sizes in code go through `theme.pt()`; font files are found through `pdf._FONT_FILES`, never a hard-coded `C:\Windows` path.
