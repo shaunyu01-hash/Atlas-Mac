@@ -1,0 +1,42 @@
+ATLAS PO ERP - SAMPLE DATA LOGINS
+=================================
+
+To open the program on Windows: open the folder "Atlas PO ERP (Sample Data)" and double-click
+"Atlas PO ERP (Sample Data).exe". Python is not needed. The first start builds the sample business,
+so the login window takes about 10 seconds to appear. Everything in it is invented.
+
+Every login below uses the password:  123
+
+Login        Who                              Use it to show
+-----------  -------------------------------  -------------------------------------------------------------
+owner        Sam Yu, Owner (master account)   Everything, including approving their own Order Form
+admin        Maria Santos, Administrator      Users, settings, suppliers, branches, products
+purchaser    Bea Reyes, Purchasing Head       Entering an OF, printing and issuing POs, debit memos, claim stubs
+purchaser2   Carlo Mendoza, Purchasing Staff  A second buyer (the preparer can't approve their own OF)
+approver     Ramon Villanueva, Ops Manager    Approving or rejecting OFs, signing off differences
+warehouse    Nestor Garcia, Warehouse Head    Recording supplier deliveries at Central Warehouse, shipping
+warehouse2   Rudy Manalo, Warehouse Receiver  A second warehouse login
+accounting   Lorna Tan, Accounting Staff      Comparing DRs, checks, cash flow, supplier balances
+viewer       Vicky Aquino                     Looking at everything without changing anything
+
+Branch receivers (blind count: each sees only their own branch, never the ordered quantity)
+  North:  nor1, nor2        South:  sou1, sou2
+  East:   eas1, eas2        West:   wes1, wes2
+
+Also in the sample: "former" (a buyer who has left) and old1 / old2 (receivers at a closed branch),
+to show how history is kept.
+
+A GOOD ORDER FOR A DEMO
+  1. purchaser   makes and submits an Order Form
+  2. approver    approves it
+  3. purchaser   prints and issues the branch POs
+  4. warehouse   records the supplier's delivery and ships it to the branches
+  5. nor1, nor2  count the delivery blind at North branch (a few issued POs are left uncounted on purpose)
+  6. accounting  works out and records the supplier check
+
+START THE SAMPLE OVER
+  Close the program and delete the folder  Documents\Atlas PO ERP Sample
+  The next start builds a fresh copy. The sample never touches real data.
+
+ON A MAC
+  See apps/desktop/mac/README.md. The logins are the same.

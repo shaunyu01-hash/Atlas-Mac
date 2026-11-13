@@ -68,8 +68,8 @@ def issue(conn, user: User, po_id: int) -> None:
 - One test file, which is the normal way: `python -E -m pytest tests/test_<area>.py -q -p no:cacheprovider`
 - The whole suite takes 12 to 25 minutes, so run it only for a finished change. Run it in the background.
 - Sample program: `python -E "Atlas PO ERP (Sample Data).pyw"` (login `owner` / `123`). Real program: `python -E "Atlas PO ERP.pyw"`.
-- Build the exe: `Build EXE.cmd`.
-- Mac: `bash mac/build_mac.sh` on a Mac builds both `.app`s and zips in `dist/mac`; `.github/workflows/mac-app.yml` does it on GitHub for Apple silicon and Intel. `mac/Start Atlas PO (Sample Data).command` runs the sample from source. Presenter guide: [mac/README.md](mac/README.md).
+- Build the exe: `Build EXE.cmd`. A built copy of the sample program is committed in `Windows App/` at the repository root, with `Sample Logins.txt`; rebuild and replace it when the program changes.
+- Mac: `Build Mac App.cmd` (double-click on Windows) pushes `HEAD` to the `mac` remote (Atlas-Mac) as `main` plus a `mac-<time>` tag, which builds the apps on GitHub and attaches the zips to a release. `bash mac/build_mac.sh` on a Mac builds both `.app`s and zips in `dist/mac`; `.github/workflows/mac-app.yml` does it on GitHub for Apple silicon and Intel. `mac/Start Atlas PO (Sample Data).command` runs the sample from source. Presenter guide: [mac/README.md](mac/README.md).
 
 ## Gotchas
 

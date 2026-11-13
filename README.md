@@ -35,6 +35,8 @@ The sample data lives in `Documents\Atlas PO ERP Sample`. Delete that folder to 
 | Open the real program | `python -E "Atlas PO ERP.pyw"` |
 | Run the tests (about 12 minutes) | `python -E -m pytest tests -q` |
 | Build the `.exe` | `Build EXE.cmd` |
+| Open the sample without Python | double-click `Windows App/Atlas PO ERP (Sample Data)/Atlas PO ERP (Sample Data).exe` (logins in `Windows App/Sample Logins.txt`) |
+| Build the Mac app from Windows | double-click `Build Mac App.cmd` |
 | Build the Mac app (on a Mac, or with the **Mac app** GitHub workflow) | `bash mac/build_mac.sh`; see `apps/desktop/mac/README.md` |
 
 **First use with real data:**

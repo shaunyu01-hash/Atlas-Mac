@@ -6,8 +6,8 @@ The desktop program runs on any Mac with macOS 12 or newer, on Apple silicon (M1
 
 ### Get the app (once)
 
-1. On GitHub, open the repository's **Actions** tab, choose **Mac app** and click **Run workflow**. It takes about 10 minutes.
-2. Open the finished run and download **Atlas-PO-ERP-Mac-apple-silicon** (M1, M2, M3, M4 and later) or **Atlas-PO-ERP-Mac-intel** (older Macs). If you're not sure, open  > About This Mac: "Chip: Apple M…" means Apple silicon.
+1. On the Windows PC, double-click **Build Mac App.cmd** in `apps/desktop`. It sends the committed code to GitHub and starts the build, which takes about 10 minutes, and shows the download link. (Or on GitHub, open the **Actions** tab, choose **Mac app** and click **Run workflow**.)
+2. From that release link, or the finished run's Artifacts, download **Atlas-PO-ERP-Mac-apple-silicon** (M1, M2, M3, M4 and later) or **Atlas-PO-ERP-Mac-intel** (older Macs). If you're not sure, open  > About This Mac: "Chip: Apple M…" means Apple silicon.
 3. Unzip it. It holds two zips: **Atlas PO ERP (Sample Data)** is the presentation copy. Unzip that one too, then drag **Atlas PO ERP (Sample Data).app** into Applications.
 
 Pushing a tag such as `v1.0` also attaches the zips to a GitHub release, which gives a plain download link.

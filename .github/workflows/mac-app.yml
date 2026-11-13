@@ -1,12 +1,12 @@
 # Builds the desktop program as Mac apps, for Apple silicon and for Intel Macs.
 # Run it from the Actions tab (Mac app > Run workflow), then download the zips from the run's Artifacts.
-# Pushing a tag such as v1.0 also attaches the zips to a GitHub release.
+# Pushing a tag such as v1.0 or mac-20261113-1200 (what "Build Mac App.cmd" does) also attaches the zips to a GitHub release.
 name: Mac app
 
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    tags: ["v*", "mac-*"]
 
 permissions:
   contents: write
