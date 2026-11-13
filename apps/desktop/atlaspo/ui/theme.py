@@ -1,6 +1,6 @@
 """Design tokens, so every screen reads as one family.
 
-Colour goes on data, not chrome: status chips and the branch columns carry it, and one teal marks what is active.
+Colour goes on data, not chrome: status chips and the branch columns carry it, and one indigo marks what is active.
 Nothing animates. People here repeat these actions all day from the keyboard, so every response is immediate.
 Light is the family look and the default. Dark uses the same roles, so every screen works in either. PDFs always stay light.
 """
@@ -30,25 +30,32 @@ def pt(size: float) -> float:
 LIGHT_MODE, DARK_MODE = "light", "dark"
 
 LIGHT = SimpleNamespace(
-    BG="#F5F6F7", PANEL="#FFFFFF", BORDER="#E3E6EA", CONTROL="#868E98", HEADER_BG="#F3F4F6",
-    TEXT="#1D2329", MUTED="#5B6470", FAINT="#69717C",
-    ACCENT="#0F6E6E", ACCENT_HOVER="#0C5C5C", ACCENT_TEXT="#0C5C5C", ACCENT_PALE="#E3F1F0",
+    BG="#F4F5F9", PANEL="#FFFFFF", BORDER="#E2E4EE", CONTROL="#858BA0", HEADER_BG="#F1F2F8",
+    TEXT="#1B1F33", MUTED="#565C75", FAINT="#676D85",
+    ACCENT="#4338CA", ACCENT_HOVER="#3730A3", ACCENT_TEXT="#3730A3", ACCENT_PALE="#E6E8FB",
     RED="#B42318", RED_PALE="#FDECEA", AMBER="#B54708", AMBER_PALE="#FEF3E2",
     GREEN="#1E7A46", GREEN_PALE="#E6F4EC", BLUE="#1F5FA8", BLUE_PALE="#E7F0FA",
-    GRAY_PALE="#EDEFF2", BRANCH_TINT="#F3F9F8", ROW_RULE="#ECEEF1",
-    HOVER="#F0F2F4", PRESSED="#E6E9ED", PRIMARY_OFF="#9CC4C4", PRIMARY_OFF_TEXT="#2E5C5B", DANGER_LINE="#E5B5B0", SCROLL="#C9CDD3",
-    TOOLTIP="#1D2329", TOOLTIP_TEXT="#FFFFFF", ARROW="down.svg", EDITABLE="#5A9F98",
+    GRAY_PALE="#ECEEF4", BRANCH_TINT="#EFF0FD", ROW_RULE="#EBEDF3", COL_TINT="#EFF1FA",
+    HOVER="#F0F1F7", PRESSED="#E5E7F0", PRIMARY_OFF="#B4B1EC", PRIMARY_OFF_TEXT="#3B3690", DANGER_LINE="#E5B5B0", SCROLL="#C8CBD8",
+    TOOLTIP="#1B1F33", TOOLTIP_TEXT="#FFFFFF", ARROW="down.svg", EDITABLE="#8984DB",
+    SIDE_BG="#1B2140", SIDE_BORDER="#1B2140", SIDE_TEXT="#E7E9F5", SIDE_MUTED="#A9AECB", SIDE_HEAD="#9097B8", SIDE_ICON="#A9AECB",
+    SIDE_HOVER="#262D52", SIDE_SEL_BG="#4338CA", SIDE_SEL_TEXT="#FFFFFF", SIDE_BUTTON="#232A4D", SIDE_BUTTON_LINE="#3E4675",
+    SIDE_BUTTON_HOVER="#2C3459", SIDE_ALERT="#FCA5A5", SIDE_FOCUS="#C7CCF5",
 )
 DARK = SimpleNamespace(
-    BG="#14181C", PANEL="#1C2126", BORDER="#2C333A", CONTROL="#6B7682", HEADER_BG="#232930",
-    TEXT="#E6E9EC", MUTED="#A3ACB6", FAINT="#939CA7",
-    ACCENT="#0F7C7C", ACCENT_HOVER="#0C6868", ACCENT_TEXT="#7AD6CF", ACCENT_PALE="#143A3C",
+    BG="#12141F", PANEL="#1A1D2B", BORDER="#2A2E42", CONTROL="#6A7090", HEADER_BG="#21253A",
+    TEXT="#E6E8F2", MUTED="#A4A9C2", FAINT="#9398B3",
+    ACCENT="#5D5AD6", ACCENT_HOVER="#4F4BC4", ACCENT_TEXT="#A9B6FC", ACCENT_PALE="#2A2E5A",
     RED="#F58E84", RED_PALE="#3F211E", AMBER="#F2AE69", AMBER_PALE="#3B2B16",
     GREEN="#72D09A", GREEN_PALE="#173522", BLUE="#8DBCF1", BLUE_PALE="#182E48",
-    GRAY_PALE="#2B3138", BRANCH_TINT="#1B2B2C", ROW_RULE="#282E34",
-    HOVER="#272D33", PRESSED="#30373E", PRIMARY_OFF="#24403F", PRIMARY_OFF_TEXT="#A3ACB6", DANGER_LINE="#74403A", SCROLL="#4A535C",
-    TOOLTIP="#E6E9EC", TOOLTIP_TEXT="#14181C", ARROW="down-dark.svg", EDITABLE="#317370",
+    GRAY_PALE="#2A2E40", BRANCH_TINT="#22264A", ROW_RULE="#262A3B", COL_TINT="#23273B",
+    HOVER="#242838", PRESSED="#2D3245", PRIMARY_OFF="#2E3160", PRIMARY_OFF_TEXT="#A4A9C2", DANGER_LINE="#74403A", SCROLL="#474D66",
+    TOOLTIP="#E6E8F2", TOOLTIP_TEXT="#12141F", ARROW="down-dark.svg", EDITABLE="#615DB1",
+    SIDE_BG="#0E1020", SIDE_BORDER="#262A3B", SIDE_TEXT="#E6E8F2", SIDE_MUTED="#A4A9C2", SIDE_HEAD="#8A90AD", SIDE_ICON="#A4A9C2",
+    SIDE_HOVER="#1C2036", SIDE_SEL_BG="#4F4BC4", SIDE_SEL_TEXT="#FFFFFF", SIDE_BUTTON="#171A2E", SIDE_BUTTON_LINE="#343957",
+    SIDE_BUTTON_HOVER="#20243C", SIDE_ALERT="#F58E84", SIDE_FOCUS="#C7CCF5",
 )
+# The sidebar is deep navy in both modes, with the active page as an indigo pill. COL_TINT shades every other column of a list (common.tint_columns).
 # CONTROL, the edge of every box and button, and the dimmed main button's text stand out at least 3 to 1 from what's around them.
 # EDITABLE is the cell to type in, at least 3 to 1 from a normal row in light and as near as dark allows (2.95) while its text stays easy to read (4.5 to 1).
 PALETTES = {LIGHT_MODE: LIGHT, DARK_MODE: DARK}
@@ -143,8 +150,15 @@ def _stylesheet(p: SimpleNamespace) -> str:
     return f"""
 QWidget {{ color: {p.TEXT}; font-family: "{FONT}"; font-size: 10pt; }}
 QMainWindow, #Main, QDialog {{ background: {p.BG}; }}
-#Sidebar {{ background: {p.PANEL}; border-right: 1px solid {p.BORDER}; }}
-#Brand {{ font-family: "{FONT_DISPLAY}"; font-size: 11.5pt; font-weight: 600; color: {p.TEXT}; }}
+#Sidebar {{ background: {p.SIDE_BG}; border-right: 1px solid {p.SIDE_BORDER}; }}
+#Sidebar QLabel {{ color: {p.SIDE_TEXT}; background: transparent; }}
+#Sidebar QLabel#Muted, #Sidebar QLabel#BrandSub {{ color: {p.SIDE_MUTED}; }}
+#Sidebar QLabel#Error {{ color: {p.SIDE_ALERT}; }}
+#Sidebar QPushButton {{ background: {p.SIDE_BUTTON}; color: {p.SIDE_TEXT}; border: 1px solid {p.SIDE_BUTTON_LINE}; }}
+#Sidebar QPushButton:hover {{ background: {p.SIDE_BUTTON_HOVER}; }}
+#Sidebar QPushButton:focus {{ border: 1px solid {p.SIDE_FOCUS}; }}
+#Sidebar QPushButton#Count:checked {{ background: {p.SIDE_SEL_BG}; color: {p.SIDE_SEL_TEXT}; }}
+#Brand {{ font-family: "{FONT_DISPLAY}"; font-size: 11.5pt; font-weight: 600; color: {p.SIDE_TEXT}; }}
 #BrandSub {{ color: {p.MUTED}; font-size: 8.5pt; }}
 #StepDone {{ color: {p.ACCENT_TEXT}; font-size: 9pt; }}
 #StepNow {{ color: white; background: {p.ACCENT}; border-radius: 4px; font-size: 9pt; font-weight: 600; }}
@@ -163,10 +177,10 @@ QMainWindow, #Main, QDialog {{ background: {p.BG}; }}
 #NoticeBad {{ background: {p.RED_PALE}; color: {p.RED}; border-radius: 4px; padding: 6px 10px; }}
 
 QListWidget#Nav {{ background: transparent; border: none; outline: 0; }}
-QListWidget#Nav::item {{ padding: 7px 10px; border-radius: 5px; margin: 1px 4px; }}
-QListWidget#Nav::item:hover {{ background: {p.GRAY_PALE}; }}
-QListWidget#Nav::item:selected {{ background: {p.ACCENT_PALE}; color: {p.ACCENT_TEXT}; font-weight: 600; }}
-QListWidget#Nav::item:disabled {{ background: transparent; color: {p.FAINT}; font-size: 8.5pt; font-weight: 600; padding: 12px 10px 3px 10px; }}
+QListWidget#Nav::item {{ color: {p.SIDE_TEXT}; padding: 7px 10px; border-radius: 5px; margin: 1px 4px; }}
+QListWidget#Nav::item:hover {{ background: {p.SIDE_HOVER}; }}
+QListWidget#Nav::item:selected {{ background: {p.SIDE_SEL_BG}; color: {p.SIDE_SEL_TEXT}; font-weight: 600; }}
+QListWidget#Nav::item:disabled {{ background: transparent; color: {p.SIDE_HEAD}; font-size: 8.5pt; font-weight: 600; padding: 12px 10px 3px 10px; }}
 
 QPushButton {{ background: {p.PANEL}; border: 1px solid {p.CONTROL}; border-radius: 5px; padding: 6px 14px; }}
 QPushButton:hover {{ background: {p.HOVER}; }}

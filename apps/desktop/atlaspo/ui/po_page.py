@@ -15,7 +15,7 @@ from ..db import POError, data_dir
 from ..money import (DISC_AMOUNT, DISC_NONE, DISC_PERCENT, OFFERED_UNITS, VAT_EXCLUSIVE, VAT_INCLUSIVE, VAT_NONE, compute_line, compute_totals,
                      fmt_milli, fmt_peso, fmt_percent, fmt_plain, fmt_qty, fx_to_centavos, m_to_qty, parse_milli, parse_percent, parse_pesos, parse_pieces,
                      pieces_per_unit)
-from .common import (open_path, show_if, confirm_reprint, button, chip_style, confirm, ask_text, date_edit, date_value, escape_shortcut, fill_table, fmt_date, fmt_datetime, guarded, info, label, make_table, panel, save_file,
+from .common import (open_path, tint_columns, show_if, confirm_reprint, button, chip_style, confirm, ask_text, date_edit, date_value, escape_shortcut, fill_table, fmt_date, fmt_datetime, guarded, info, label, make_table, panel, save_file,
                      select_data, selected_key, set_date, set_terms, set_widths, terms_combo)
 from . import common, theme
 
@@ -194,6 +194,7 @@ class POPage(QWidget):
         outer.addLayout(bar)
 
         self.grid = QTableWidget(0, len(HEADERS))
+        tint_columns(self.grid)
         self.grid.setHorizontalHeaderLabels(HEADERS)
         self.grid.verticalHeader().setDefaultSectionSize(28)
         self.grid.verticalHeader().setMinimumWidth(28)

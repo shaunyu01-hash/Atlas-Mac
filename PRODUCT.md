@@ -18,7 +18,7 @@ Plain, exact and calm. Labels use everyday purchasing words (OF, PO, DR, supplie
 
 ## Visual reference
 
-Light neutral surfaces, one teal accent and Segoe UI Variable. Light mode is the default; dark mode uses the same roles and is chosen per Windows user.
+Cool light surfaces, a deep navy sidebar, one indigo accent, a gold-and-black "A" logo and Segoe UI Variable (Helvetica Neue on a Mac). Every other column of a list is faintly shaded so a column can be followed down a long list. Light mode is the default; dark mode uses the same roles and is chosen per Windows user.
 
 ## Anti-references
 

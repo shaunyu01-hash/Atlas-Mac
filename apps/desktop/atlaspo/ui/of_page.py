@@ -18,7 +18,7 @@ from .. import auth, masters, of_layout, order_forms as of_service, orders, pdf,
 from ..db import POError, get_setting, today
 from ..money import (DISC_AMOUNT, DISC_NONE, DISC_PERCENT, OFFERED_UNITS, VAT_EXCLUSIVE, VAT_INCLUSIVE, VAT_NONE, compute_line, compute_order, fmt_milli, fmt_peso,
                      fmt_percent, fmt_plain, fmt_qty, fx_to_centavos, m_to_qty, parse_milli, parse_percent, parse_pesos, parse_pieces, parse_qty, per_piece, pieces_per_unit, qty_to_m, sticker_deduction)
-from .common import (open_path, month_picker, show_if, STATUS_ROLE, ColumnChooser, StatusDelegate, WidthKeeper, confirm_reprint, ask_approve, ask_text, button, chip_style, combo_value, confirm, date_edit, date_value, fill_table, fit_tree_columns, fmt_date, fmt_datetime, escape_shortcut, guarded, hide_unused, info, label, left_aligned, resort,
+from .common import (open_path, tint_columns, month_picker, show_if, STATUS_ROLE, ColumnChooser, StatusDelegate, WidthKeeper, confirm_reprint, ask_approve, ask_text, button, chip_style, combo_value, confirm, date_edit, date_value, fill_table, fit_tree_columns, fmt_date, fmt_datetime, escape_shortcut, guarded, hide_unused, info, label, left_aligned, resort,
                      make_table, make_tree, open_for_printing, panel, print_order_forms, register_tabs, save_file, search_combo, select_data, selected_key, set_date, set_terms,
                      set_widths, show_tab_counts, terms_combo, workflow_strip, Pager, keep_place)
 from .po_page import ComboDelegate
@@ -336,6 +336,7 @@ class OFPage(QWidget):
         outer.addSpacing(6)
 
         self.grid = DepartmentGrid(0, 0)
+        tint_columns(self.grid)
         self.grid.verticalHeader().setDefaultSectionSize(30)
         self.grid.verticalHeader().setMinimumWidth(28)
         self.grid.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -356,6 +357,7 @@ class OFPage(QWidget):
 
         # Stays under the grid with the same columns, so each branch's total sits below its own quantities.
         self.footer = QTableWidget(2, 0)
+        tint_columns(self.footer)
         self.footer.setObjectName("Footer")
         self.footer.horizontalHeader().hide()
         self.footer.verticalHeader().setDefaultSectionSize(26)

@@ -45,8 +45,8 @@ def window(themed, world):
 @pytest.mark.parametrize("mode", theme.PALETTES)
 def test_text_is_readable_in_both_modes(mode):
     p = theme.PALETTES[mode]
-    pairs = [(p.TEXT, s) for s in (p.BG, p.PANEL, p.HEADER_BG, p.ACCENT_PALE, p.BRANCH_TINT, p.GRAY_PALE)]
-    pairs += [(p.MUTED, s) for s in (p.BG, p.PANEL, p.GRAY_PALE)]
+    pairs = [(p.TEXT, s) for s in (p.BG, p.PANEL, p.HEADER_BG, p.ACCENT_PALE, p.BRANCH_TINT, p.GRAY_PALE, p.COL_TINT)]
+    pairs += [(p.MUTED, s) for s in (p.BG, p.PANEL, p.GRAY_PALE, p.COL_TINT)]
     pairs += [(p.FAINT, s) for s in (p.BG, p.PANEL)]
     pairs += [(p.ACCENT_TEXT, s) for s in (p.BG, p.PANEL, p.ACCENT_PALE)]
     pairs += [(p.RED, s) for s in (p.BG, p.PANEL, p.RED_PALE)]
@@ -60,6 +60,16 @@ def test_text_is_readable_in_both_modes(mode):
 def test_focus_outline_and_controls_can_be_seen(mode):
     p = theme.PALETTES[mode]
     assert contrast(p.ACCENT, p.PANEL) >= 3
+
+
+@pytest.mark.parametrize("mode", theme.PALETTES)
+def test_the_sidebar_is_readable_in_both_modes(mode):
+    p = theme.PALETTES[mode]
+    pairs = [(p.SIDE_TEXT, s, 4.5) for s in (p.SIDE_BG, p.SIDE_HOVER, p.SIDE_BUTTON, p.SIDE_BUTTON_HOVER)]
+    pairs += [(p.SIDE_MUTED, p.SIDE_BG, 4.5), (p.SIDE_HEAD, p.SIDE_BG, 4.5), (p.SIDE_SEL_TEXT, p.SIDE_SEL_BG, 4.5), (p.SIDE_ALERT, p.SIDE_BG, 4.5)]
+    pairs += [(p.SIDE_ICON, p.SIDE_BG, 3), (p.SIDE_FOCUS, p.SIDE_BUTTON, 3)]
+    failing = [(a, b, round(contrast(a, b), 2)) for a, b, need in pairs if contrast(a, b) < need]
+    assert failing == []
 
 
 def test_both_palettes_have_the_same_roles():

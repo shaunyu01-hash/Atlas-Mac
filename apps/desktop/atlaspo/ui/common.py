@@ -13,7 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCore import QDate, QEvent, QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QDate, QEvent, QObject, QPoint, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPageSize, QPainter, QPixmap
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPrintSupport import QAbstractPrintDialog, QPrintDialog, QPrinter
@@ -327,7 +327,7 @@ def button(text: str, on_click=None, name: str = "", lock: bool = True) -> QPush
 def icon(name: str) -> QIcon:
     """A sidebar icon drawn in the current mode's ink, at three times its size so it stays sharp on high-DPI screens."""
     svg = (ASSETS / "icons" / f"{name}.svg").read_text(encoding="utf-8")
-    svg = svg.replace("#5B6470", theme.current.MUTED).replace('width="24" height="24"', 'width="72" height="72"')
+    svg = svg.replace("#5B6470", theme.current.SIDE_ICON).replace('width="24" height="24"', 'width="72" height="72"')
     pixmap = QPixmap()
     pixmap.loadFromData(svg.encode("utf-8"), "SVG")
     return QIcon(pixmap)
@@ -778,6 +778,57 @@ def date_value(w: QDateEdit) -> str | None:
     return w.date().toString("yyyy-MM-dd")
 
 
+class ColumnTint(QObject):
+    """Shades every other shown column of a list in COL_TINT, so the eye can follow one column down a long list.
+    It paints under the cells, so a cell's own colour (a branch column, a status, the selected row) still shows over it,
+    and it stops at the last row rather than striping the empty space below."""
+
+    def __init__(self, view):
+        super().__init__(view)
+        self.view = view
+        view.viewport().installEventFilter(self)
+
+    def _bottom(self, viewport) -> int:
+        view = self.view
+        if hasattr(view, "verticalHeader"):  # a table: the rows' total height, less what is scrolled away
+            rows = view.verticalHeader()
+            return min(viewport.height(), rows.length() - rows.offset())
+        index = view.indexAt(QPoint(1, 1))  # a tree: walk the rows that show, at most a screenful
+        bottom = 0
+        while index.isValid():
+            rect = view.visualRect(index)
+            bottom = rect.bottom() + 1
+            if bottom >= viewport.height():
+                break
+            index = view.indexBelow(index)
+        return bottom
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Paint:
+            view = self.view
+            header = view.horizontalHeader() if hasattr(view, "horizontalHeader") else view.header()
+            bottom = self._bottom(obj)
+            if bottom > 0:
+                painter = QPainter(obj)
+                color = QColor(theme.current.COL_TINT)
+                shown = 0
+                for visual in range(header.count()):
+                    logical = header.logicalIndex(visual)
+                    if header.isSectionHidden(logical):
+                        continue
+                    if shown % 2:
+                        painter.fillRect(header.sectionViewportPosition(logical), 0, header.sectionSize(logical), bottom, color)
+                    shown += 1
+                painter.end()
+        return False
+
+
+def tint_columns(view) -> None:
+    """Every other column of this table or tree gets the faint column tint. make_table and make_tree do this already."""
+    if getattr(view, "_column_tint", None) is None:
+        view._column_tint = ColumnTint(view)
+
+
 def make_table(headers: list[str], *, numeric: tuple[int, ...] = (), stretch: int | None = None) -> QTableWidget:
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
@@ -800,6 +851,7 @@ def make_table(headers: list[str], *, numeric: tuple[int, ...] = (), stretch: in
         head = t.horizontalHeaderItem(col)
         head.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     enable_sort(t)
+    tint_columns(t)
     return t
 
 
@@ -826,6 +878,7 @@ def make_tree(headers: list[str], *, numeric: tuple[int, ...] = (), stretch: int
     for col in numeric:
         t.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     enable_sort(t)
+    tint_columns(t)
     return t
 
 
