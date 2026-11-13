@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-import os
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QStringListModel, Qt, QTimer, Signal
@@ -19,7 +18,7 @@ from .. import auth, masters, of_layout, order_forms as of_service, orders, pdf,
 from ..db import POError, get_setting, today
 from ..money import (DISC_AMOUNT, DISC_NONE, DISC_PERCENT, OFFERED_UNITS, VAT_EXCLUSIVE, VAT_INCLUSIVE, VAT_NONE, compute_line, compute_order, fmt_milli, fmt_peso,
                      fmt_percent, fmt_plain, fmt_qty, fx_to_centavos, m_to_qty, parse_milli, parse_percent, parse_pesos, parse_pieces, parse_qty, per_piece, pieces_per_unit, qty_to_m, sticker_deduction)
-from .common import (month_picker, show_if, STATUS_ROLE, ColumnChooser, StatusDelegate, WidthKeeper, confirm_reprint, ask_approve, ask_text, button, chip_style, combo_value, confirm, date_edit, date_value, fill_table, fit_tree_columns, fmt_date, fmt_datetime, escape_shortcut, guarded, hide_unused, info, label, left_aligned, resort,
+from .common import (open_path, month_picker, show_if, STATUS_ROLE, ColumnChooser, StatusDelegate, WidthKeeper, confirm_reprint, ask_approve, ask_text, button, chip_style, combo_value, confirm, date_edit, date_value, fill_table, fit_tree_columns, fmt_date, fmt_datetime, escape_shortcut, guarded, hide_unused, info, label, left_aligned, resort,
                      make_table, make_tree, open_for_printing, panel, print_order_forms, register_tabs, save_file, search_combo, select_data, selected_key, set_date, set_terms,
                      set_widths, show_tab_counts, terms_combo, workflow_strip, Pager, keep_place)
 from .po_page import ComboDelegate
@@ -1208,7 +1207,7 @@ class OFPage(QWidget):
         path = save_file(self, "Save the warehouse copy", default, "PDF (*.pdf)")
         if path:
             pdf.warehouse_of(self.conn, self.user, self.of_id, path)
-            os.startfile(path)  # opens in the PDF viewer, where it can be printed
+            open_path(path)  # opens in the PDF viewer, where it can be printed
             self._load_history()
 
     def make_office_pdf(self):
@@ -1218,7 +1217,7 @@ class OFPage(QWidget):
         path = save_file(self, "Save the office copy", default, "PDF (*.pdf)")
         if path:
             pdf.office_of(self.conn, self.user, self.of_id, path)
-            os.startfile(path)
+            open_path(path)
             self._load_history()
 
     def start_amendment(self):

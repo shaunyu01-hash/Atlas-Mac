@@ -4,6 +4,8 @@ Colour goes on data, not chrome: status chips and the branch columns carry it, a
 Nothing animates. People here repeat these actions all day from the keyboard, so every response is immediate.
 Light is the family look and the default. Dark uses the same roles, so every screen works in either. PDFs always stay light.
 """
+import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,8 +15,17 @@ from PySide6.QtWidgets import QApplication
 
 ASSETS = Path(__file__).parent / "assets"
 
-FONT = "Segoe UI Variable Text"
-FONT_DISPLAY = "Segoe UI Variable Display"
+MAC = sys.platform == "darwin"
+
+# A Mac has no Segoe UI, so it uses its own system font. Qt on a Mac counts 72 points to the inch where Windows counts 96, so a size
+# in pt would come out a quarter smaller there. stylesheet() turns every pt into the pixels Windows would draw, and the screens look alike.
+FONT = "Helvetica Neue" if MAC else "Segoe UI Variable Text"
+FONT_DISPLAY = "Helvetica Neue" if MAC else "Segoe UI Variable Display"
+
+
+def pt(size: float) -> float:
+    """A point size in code (QFont.setPointSizeF) that draws as large as it does on Windows."""
+    return size * 96 / 72 if MAC else size
 
 LIGHT_MODE, DARK_MODE = "light", "dark"
 
@@ -122,6 +133,13 @@ def apply(mode: str) -> None:
 
 
 def stylesheet(p: SimpleNamespace) -> str:
+    sheet = _stylesheet(p)
+    if MAC:
+        sheet = re.sub(r"(\d+(?:\.\d+)?)pt\b", lambda m: f"{round(float(m.group(1)) * 96 / 72)}px", sheet)
+    return sheet
+
+
+def _stylesheet(p: SimpleNamespace) -> str:
     return f"""
 QWidget {{ color: {p.TEXT}; font-family: "{FONT}"; font-size: 10pt; }}
 QMainWindow, #Main, QDialog {{ background: {p.BG}; }}

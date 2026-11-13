@@ -85,15 +85,32 @@ def _by_department(items: list) -> list[tuple[int, str, list]]:
     return [(dept, group[0]["department"], group) for dept, group in sorted(groups.items())]
 
 
+# Regular and bold font files with the peso sign: Windows first, then a Mac, then Linux. The first pair found is used.
+_FONT_FILES = (
+    (r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\segoeuib.ttf"),
+    (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
+    ("/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    ("/Library/Fonts/Arial.ttf", "/Library/Fonts/Arial Bold.ttf"),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+)
+
+
 def _fonts() -> tuple[str, str]:
-    """A font with the peso sign, embedded so it prints the same on any PC."""
-    folder = Path(r"C:\Windows\Fonts")
-    for regular, bold in (("segoeui.ttf", "segoeuib.ttf"), ("arial.ttf", "arialbd.ttf")):
-        if (folder / regular).exists() and (folder / bold).exists():
-            pdfmetrics.registerFont(TTFont("POBody", str(folder / regular)))
-            pdfmetrics.registerFont(TTFont("POBold", str(folder / bold)))
-            pdfmetrics.registerFontFamily("POBody", normal="POBody", bold="POBold", italic="POBody", boldItalic="POBold")
-            return "POBody", "POBold"
+    """A font with the peso sign, embedded so it prints the same on any PC. A font without the sign is skipped, and with none at all
+    amounts print as PHP 1,234.50 in Helvetica."""
+    for regular, bold in _FONT_FILES:
+        if not (Path(regular).exists() and Path(bold).exists()):
+            continue
+        try:
+            body, heavy = TTFont("POBody", regular), TTFont("POBold", bold)
+        except Exception:  # noqa: BLE001 (a font file reportlab can't read is passed over for the next)
+            continue
+        if 0x20B1 not in body.face.charToGlyph or 0x20B1 not in heavy.face.charToGlyph:
+            continue
+        pdfmetrics.registerFont(body)
+        pdfmetrics.registerFont(heavy)
+        pdfmetrics.registerFontFamily("POBody", normal="POBody", bold="POBold", italic="POBody", boldItalic="POBold")
+        return "POBody", "POBold"
     return "Helvetica", "Helvetica-Bold"
 
 

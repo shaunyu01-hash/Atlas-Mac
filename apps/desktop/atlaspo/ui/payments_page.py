@@ -49,7 +49,7 @@ def _header_widths(table, widths: dict[int, int]) -> dict[int, int]:
     """Each column at least as wide as its heading, so "PO unit cost" or "Difference" reads in full rather than ending in "...".
     The heading is drawn at 9pt semibold with 6px padding a side (theme)."""
     font = QFont(table.font())
-    font.setPointSizeF(9)
+    font.setPointSizeF(theme.pt(9))
     font.setWeight(QFont.Weight.DemiBold)
     fm = QFontMetrics(font)
     return {c: max(w, fm.horizontalAdvance(table.horizontalHeaderItem(c).text()) + 2 * 6 + 10) for c, w in widths.items()}

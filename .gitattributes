@@ -3,3 +3,7 @@
 
 # Legacy files stay byte-for-byte as copied
 legacy/** -text
+
+# Mac scripts must keep LF endings or the Mac refuses to run them
+*.sh text eol=lf
+*.command text eol=lf

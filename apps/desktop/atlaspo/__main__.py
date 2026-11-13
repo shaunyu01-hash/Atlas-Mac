@@ -100,6 +100,9 @@ def main() -> int:
     install_error_handler()
     app = QApplication(sys.argv)
     app.setApplicationName("Atlas PO ERP")
+    if theme.MAC:
+        # The Mac's own style ignores parts of the stylesheet, such as buttons and drop-downs. Fusion follows it, as Windows does.
+        app.setStyle("Fusion")
     app.setWindowIcon(app_icon())
     theme.apply(theme.saved_mode())
     app.setQuitOnLastWindowClosed(True)

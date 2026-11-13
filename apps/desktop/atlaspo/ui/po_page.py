@@ -1,7 +1,6 @@
 """The PO screen. A PO comes from an Order Form, so this is read-only, unlocked for amendments, and where it is issued."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from ..db import POError, data_dir
 from ..money import (DISC_AMOUNT, DISC_NONE, DISC_PERCENT, OFFERED_UNITS, VAT_EXCLUSIVE, VAT_INCLUSIVE, VAT_NONE, compute_line, compute_totals,
                      fmt_milli, fmt_peso, fmt_percent, fmt_plain, fmt_qty, fx_to_centavos, m_to_qty, parse_milli, parse_percent, parse_pesos, parse_pieces,
                      pieces_per_unit)
-from .common import (show_if, confirm_reprint, button, chip_style, confirm, ask_text, date_edit, date_value, escape_shortcut, fill_table, fmt_date, fmt_datetime, guarded, info, label, make_table, panel, save_file,
+from .common import (open_path, show_if, confirm_reprint, button, chip_style, confirm, ask_text, date_edit, date_value, escape_shortcut, fill_table, fmt_date, fmt_datetime, guarded, info, label, make_table, panel, save_file,
                      select_data, selected_key, set_date, set_terms, set_widths, terms_combo)
 from . import common, theme
 
@@ -799,13 +798,13 @@ class POPage(QWidget):
         path = save_file(self, "Save supplier PDF", str(Path.home() / "Documents" / self._file_name()), "PDF (*.pdf)")
         if path:
             Path(path).write_bytes(self._pdf_bytes())
-            os.startfile(path)
+            open_path(path)
 
     def save_blind_sheet(self):
         path = save_file(self, "Save the blind receiving sheet", str(Path.home() / "Documents" / f"{self.po['po_number']} Blind sheet.pdf"), "PDF (*.pdf)")
         if path:
             Path(path).write_bytes(pdf.blind_copy(self.conn, self.user, self.po_id))
-            os.startfile(path)
+            open_path(path)
 
     def print_pdf(self):
         """Opens in the PDF viewer, where it can be printed. A preview is free. An issued file printing again is marked as a copy, and recorded."""
@@ -815,7 +814,7 @@ class POPage(QWidget):
     def _open_copy(self, data: bytes):
         path = write_print_file(self._file_name().removesuffix(".pdf"), data)
         self._load_history()
-        os.startfile(path)
+        open_path(path)
 
     def _load_versions(self):
         rows = orders.issued_versions(self.conn, self.po_id)
@@ -831,7 +830,7 @@ class POPage(QWidget):
             return
         path = write_print_file(f"{self.po['po_number']}-issued-rev{revision}", orders.issued_pdf(self.conn, self.user, self.po_id, revision))
         self._load_history()
-        os.startfile(path)
+        open_path(path)
 
     def start_amendment(self):
         self.amending = True
@@ -905,4 +904,4 @@ class POPage(QWidget):
         if orders.attachment_changed(row) and not confirm(
                 self, "Open file", f"This file changed since it was attached. Open '{row['file_name']}' anyway?", "Open"):
             return
-        os.startfile(path)
+        open_path(path)

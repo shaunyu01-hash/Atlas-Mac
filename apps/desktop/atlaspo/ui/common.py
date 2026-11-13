@@ -864,7 +864,7 @@ def open_for_printing(documents: list[bytes], name: str) -> None:
         break
     else:
         raise POError("The print file couldn't be saved in the print folder. Close any open print files and try again.")
-    os.startfile(path)
+    open_path(path)
 
 
 def choose_printer(parent) -> QPrinter | None:
@@ -910,10 +910,20 @@ def print_once(printer: QPrinter, document: bytes) -> None:
             raise POError("The printer did not finish the document. Check what came out of the printer.")
 
 
+def open_path(path) -> None:
+    """Opens a file in this computer's own program for it (a PDF in the PDF viewer), or a folder in Explorer or Finder.
+    Windows uses os.startfile, as it always has. A Mac or Linux asks the desktop through Qt."""
+    if hasattr(os, "startfile"):
+        os.startfile(path)
+        return
+    if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve()))):
+        raise POError(f"The file was saved, but this computer couldn't open it. It is at {path}.")
+
+
 def open_email_draft(path: Path, to: str, subject: str, body: str) -> None:
     """Opens a new message in this PC's email program, and the folder holding the file to attach. Email programs won't accept an attachment from a link, so a person drags it in."""
     QDesktopServices.openUrl(QUrl(f"mailto:{quote(to)}?subject={quote(subject)}&body={quote(body)}"))
-    os.startfile(path.parent)
+    open_path(path.parent)
 
 
 def confirm_reprint(parent, what: str) -> bool:
